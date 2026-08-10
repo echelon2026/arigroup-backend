@@ -19,9 +19,9 @@
 
 5. **Add Environment Variables:**
    ```
-   SUPABASE_URL=https://trxextehcogblgzjgsft.supabase.co
-   SUPABASE_SERVICE_KEY=
-   SECRET_KEY=arigroup_development_secret_key_2026
+   SUPABASE_URL=your-supabase-url
+   SUPABASE_SERVICE_KEY=your-service-key
+   SECRET_KEY=your-secret-key
    ENVIRONMENT=production
    ```
 
