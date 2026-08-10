@@ -31,6 +31,7 @@ function ARViewer() {
       };
       autoStart();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelId, permissionGranted]);
 
   const initializeAR = async () => {
