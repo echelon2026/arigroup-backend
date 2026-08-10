@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-dotenv
+pydantic
+qrcode
+pillow
+supabase
+python-multipart
+requests
