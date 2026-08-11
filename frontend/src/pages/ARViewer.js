@@ -177,23 +177,13 @@ function ARViewer() {
       sessionRef.current = session;
       renderer.xr.setSession(session);
       setArActive(true);
-      setStatus('✓ AR Active. Point at a flat surface and tap to place.');
+      setStatus('🔍 Scanning for flat surface...');
 
       const space = await session.requestReferenceSpace('viewer');
       const source = await session.requestHitTestSource({ space });
 
       let placed = false;
       const reticle = createReticle(scene);
-
-      session.addEventListener('select', () => {
-        if (modelRef.current && reticle && !placed) {
-          const position = reticle.getWorldPosition(new THREE.Vector3());
-          modelRef.current.position.copy(position);
-          modelRef.current.visible = true;
-          placed = true;
-          setStatus('✓ Object placed! Rotate device to view from different angles.');
-        }
-      });
 
       const onXRFrame = (time, frame) => {
         const pose = frame.getViewerPose(space);
@@ -205,6 +195,16 @@ function ARViewer() {
           const hitPose = hit.getPose(space);
           reticle.visible = true;
           reticle.matrix.fromArray(hitPose.transform.matrix);
+
+          // Auto-place model on first flat surface detection
+          if (modelRef.current && !placed) {
+            const position = reticle.getWorldPosition(new THREE.Vector3());
+            modelRef.current.position.copy(position);
+            modelRef.current.visible = true;
+            placed = true;
+            setStatus('✓ Model placed! Rotate device to view from different angles.');
+            console.log('Model auto-placed on flat surface');
+          }
         } else {
           reticle.visible = false;
         }
