@@ -165,7 +165,7 @@ async def generate_qr(model_id: str):
     restaurant_id = model["restaurant_id"]
 
     # Create QR code URL pointing to production frontend
-    frontend_url = os.getenv("FRONTEND_URL", "https://frontend-delta-orpin-67.vercel.app")
+    frontend_url = os.getenv("FRONTEND_URL", "https://arigroup.space")
     qr_url = f"{frontend_url}/view/{model_id}"
 
     # Generate QR code image
