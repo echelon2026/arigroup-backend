@@ -164,8 +164,9 @@ async def generate_qr(model_id: str):
     model = models_db[model_id]
     restaurant_id = model["restaurant_id"]
 
-    # Create QR code URL using local IP (so it works from phone)
-    qr_url = f"http://10.76.194.19:3000/view/{model_id}"
+    # Create QR code URL pointing to production frontend
+    frontend_url = os.getenv("FRONTEND_URL", "https://frontend-delta-orpin-67.vercel.app")
+    qr_url = f"{frontend_url}/view/{model_id}"
 
     # Generate QR code image
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -206,13 +207,22 @@ async def get_model_file(model_id: str):
 
     model = models_db[model_id]
     file_path = model["file_path"]
+    file_type = model["file_type"].lower()
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Model file not found")
 
+    # Map file types to correct media types
+    media_types = {
+        "obj": "text/plain",
+        "gltf": "application/json",
+        "glb": "application/octet-stream"
+    }
+    media_type = media_types.get(file_type, "application/octet-stream")
+
     # Return the file directly
     from fastapi.responses import FileResponse
-    return FileResponse(file_path, media_type="application/octet-stream")
+    return FileResponse(file_path, media_type=media_type)
 
 if __name__ == "__main__":
     import uvicorn
