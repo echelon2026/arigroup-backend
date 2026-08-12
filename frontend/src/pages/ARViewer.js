@@ -54,7 +54,6 @@ function ARViewer() {
       }
 
       setPermissionGranted(true);
-      setStatus('⏳ Loading 3D model...');
 
       // Setup Three.js scene
       const scene = new THREE.Scene();
@@ -83,12 +82,15 @@ function ARViewer() {
       const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
       scene.add(light);
 
-      // Load model
-      await loadModelAsync(scene, `${API_URL}/model/${modelId}`);
-      setModelLoaded(true);
-      setStatus('✓ Tap to place object');
+      // Load model in PARALLEL (don't block)
+      loadModelAsync(scene, `${API_URL}/model/${modelId}`)
+        .then(() => {
+          setModelLoaded(true);
+          console.log('✓ Model loaded');
+        })
+        .catch(e => console.error('Model load error:', e));
 
-      // Check for WebXR support
+      // Check for WebXR support and start immediately
       if (navigator.xr) {
         try {
           const isSupported = await navigator.xr.isSessionSupported('immersive-ar');
