@@ -166,7 +166,7 @@ function ARViewer() {
       renderer.xr.setSession(session);
       setArActive(true);
 
-      const space = await session.requestReferenceSpace('viewer');
+      const space = await session.requestReferenceSpace('local');
       const hitTestSource = await session.requestHitTestSource({ space });
 
       let placed = false;
