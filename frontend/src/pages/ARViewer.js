@@ -320,8 +320,7 @@ function ARViewer() {
           width: '100%',
           height: '100%',
           objectFit: 'cover',
-          zIndex: 0,
-          transform: 'scaleX(-1)' // Mirror for selfie view
+          zIndex: 0
         }}
       />
 
