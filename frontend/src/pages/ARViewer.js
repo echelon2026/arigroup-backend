@@ -39,20 +39,6 @@ function ARViewer() {
       setStatus('📷 Accessing camera...');
       console.log('Starting AR initialization...');
 
-      // Request camera permission IMMEDIATELY
-      console.log('Requesting camera permission...');
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-        audio: false
-      });
-      console.log('Camera permission granted, stream:', stream);
-
-      // Start displaying camera feed right away
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(e => console.error('Video play error:', e));
-      }
-
       setPermissionGranted(true);
 
       // Setup Three.js scene
@@ -65,7 +51,6 @@ function ARViewer() {
         0.1,
         1000
       );
-      camera.scale.x = -1; // Flip camera horizontally
 
       const renderer = new THREE.WebGLRenderer({
         antialias: true,
@@ -97,7 +82,7 @@ function ARViewer() {
           const isSupported = await navigator.xr.isSessionSupported('immersive-ar');
           if (isSupported) {
             setStatus('📱 Point camera at a flat surface');
-            initWebXR(scene, renderer, camera, stream);
+            initWebXR(scene, renderer, camera);
             return;
           }
         } catch (e) {
@@ -106,7 +91,7 @@ function ARViewer() {
       }
 
       // Fallback: Camera mode with simple placement
-      initCameraMode(scene, renderer, camera, stream);
+      initCameraMode(scene, renderer, camera);
 
     } catch (error) {
       console.error('AR initialization error:', error);
@@ -169,7 +154,7 @@ function ARViewer() {
     }
   };
 
-  const initWebXR = async (scene, renderer, camera, stream) => {
+  const initWebXR = async (scene, renderer, camera) => {
     try {
       const session = await navigator.xr.requestSession('immersive-ar', {
         requiredFeatures: ['hit-test', 'dom-overlay', 'dom-overlay-for-handheld-ar'],
@@ -208,14 +193,10 @@ function ARViewer() {
 
             // Auto-place model on first flat surface detection
             if (modelRef.current && !placed) {
-              const matrix = new THREE.Matrix4().fromArray(hitPose.transform.matrix);
-              const position = new THREE.Vector3().setFromMatrixPosition(matrix);
-
-              // Flip X coordinate to match mirrored view
-              position.x *= -1;
-
+              const position = new THREE.Vector3().setFromMatrixPosition(
+                new THREE.Matrix4().fromArray(hitPose.transform.matrix)
+              );
               modelRef.current.position.copy(position);
-              modelRef.current.scale.x = -1; // Flip model horizontally
               modelRef.current.visible = true;
               placed = true;
 
@@ -237,11 +218,11 @@ function ARViewer() {
       renderer.xr.setAnimationLoop((time, frame) => onXRFrame(time, frame));
     } catch (error) {
       console.log('WebXR session failed, using camera mode:', error);
-      initCameraMode(scene, renderer, camera, stream);
+      initCameraMode(scene, renderer, camera);
     }
   };
 
-  const initCameraMode = (scene, renderer, camera, stream) => {
+  const initCameraMode = (scene, renderer, camera) => {
     setArActive(false);
     setStatus('📱 Camera Mode: Tap to place the model');
 
