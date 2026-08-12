@@ -39,7 +39,14 @@ function ARViewerModelViewer() {
     // accurate once the model itself has loaded.
     const canAR = !!modelViewerRef.current?.canActivateAR;
     setArSupported(canAR);
-    setStatus(canAR ? '✓ Ready — tap "View in your space"' : '✓ Model loaded');
+    setStatus(canAR ? '📱 Launching AR...' : '✓ Model loaded');
+
+    // Auto-activate AR immediately when model loads and AR is supported
+    if (canAR) {
+      setTimeout(() => {
+        modelViewerRef.current?.activateAR();
+      }, 500);
+    }
   }, []);
 
   const handleError = useCallback((event) => {
