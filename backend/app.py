@@ -232,6 +232,27 @@ async def generate_qr(model_id: str):
         "qr_image_url": f"data:image/png;base64,{__import__('base64').b64encode(open(qr_image_path, 'rb').read()).decode()}"
     }
 
+@app.get("/model/{model_id}/info")
+async def get_model_info(model_id: str):
+    """Lightweight JSON metadata for a model. The AR viewer needs this to
+    read the per-model `scale` that's been collected in the upload form
+    (Dashboard/AdminDashboard) since the app's inception but was never
+    actually served anywhere — the viewer only ever fetched the raw GLB
+    from /model/{model_id}, so that field had zero effect on how big the
+    model actually rendered. This is what was making uploaded models
+    (e.g. the cube) show up oversized in AR regardless of what scale was
+    set at upload time."""
+    if model_id not in models_db:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    model = models_db[model_id]
+    return {
+        "id": model["id"],
+        "name": model.get("name"),
+        "file_type": model.get("file_type"),
+        "scale": model.get("scale", 1.0),
+    }
+
 @app.get("/model/{model_id}")
 async def get_model_file(model_id: str):
     if model_id not in models_db:

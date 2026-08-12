@@ -148,16 +148,12 @@
   border-radius: 20px;
 }
 
-.ar-cta-btn {
-  padding: 12px 24px;
-  background: #667eea;
-  color: white;
-  border: none;
-  border-radius: 30px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+/* Exists only to occupy model-viewer's "ar-button" slot so model-viewer
+   doesn't render its own default floating AR button in its place. AR
+   launching is fully driven from app code (auto-launch / tap-anywhere /
+   manual-ar-btn), so this itself is never meant to be seen or tapped. */
+.ar-button-slot-suppressed {
+  display: none;
 }
 
 .manual-ar-btn {
