@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login';
 import AdminDashboard from './pages/AdminDashboard';
+import ARViewerModelViewer from './pages/ARViewerModelViewer';
 import ARViewer from './pages/ARViewer';
 import './App.css';
 
@@ -22,7 +23,10 @@ function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/view/:modelId" element={<ARViewer />} />
+        {/* Primary: Google model-viewer with native AR support */}
+        <Route path="/view/:modelId" element={<ARViewerModelViewer />} />
+        {/* Fallback: WebXR implementation */}
+        <Route path="/view-webxr/:modelId" element={<ARViewer />} />
         <Route path="/login" element={<Login setIsLoggedIn={setIsLoggedIn} />} />
         <Route
           path="/"
