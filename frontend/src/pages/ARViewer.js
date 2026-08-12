@@ -157,9 +157,8 @@ function ARViewer() {
   const initWebXR = async (scene, renderer, camera) => {
     try {
       const session = await navigator.xr.requestSession('immersive-ar', {
-        requiredFeatures: ['hit-test', 'dom-overlay', 'dom-overlay-for-handheld-ar'],
-        optionalFeatures: ['light-estimation'],
-        domOverlay: { root: document.body }
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['dom-overlay-for-handheld-ar', 'light-estimation']
       });
 
       sessionRef.current = session;
