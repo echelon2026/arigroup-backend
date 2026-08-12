@@ -93,7 +93,7 @@ function ARViewer() {
         try {
           const isSupported = await navigator.xr.isSessionSupported('immersive-ar');
           if (isSupported) {
-            setStatus('Point at a flat surface. Ready for AR!');
+            setStatus('📱 Point camera at a flat surface');
             initWebXR(scene, renderer, camera, stream);
             return;
           }
@@ -169,44 +169,59 @@ function ARViewer() {
   const initWebXR = async (scene, renderer, camera, stream) => {
     try {
       const session = await navigator.xr.requestSession('immersive-ar', {
-        requiredFeatures: ['hit-test'],
-        optionalFeatures: ['dom-overlay', 'dom-overlay-for-handheld-ar'],
+        requiredFeatures: ['hit-test', 'dom-overlay', 'dom-overlay-for-handheld-ar'],
+        optionalFeatures: ['light-estimation'],
         domOverlay: { root: document.body }
       });
 
       sessionRef.current = session;
       renderer.xr.setSession(session);
       setArActive(true);
-      setStatus('🔍 Scanning for flat surface...');
 
       const space = await session.requestReferenceSpace('viewer');
-      const source = await session.requestHitTestSource({ space });
+      const hitTestSource = await session.requestHitTestSource({ space });
 
       let placed = false;
+      let surfaceDetected = false;
       const reticle = createReticle(scene);
 
       const onXRFrame = (time, frame) => {
-        const pose = frame.getViewerPose(space);
-        if (!pose) return;
+        const hitTestResults = frame.getHitTestResults(hitTestSource);
 
-        const hitTestResults = frame.getHitTestResults(source);
         if (hitTestResults.length > 0) {
           const hit = hitTestResults[0];
           const hitPose = hit.getPose(space);
-          reticle.visible = true;
-          reticle.matrix.fromArray(hitPose.transform.matrix);
 
-          // Auto-place model on first flat surface detection
-          if (modelRef.current && !placed) {
-            const position = reticle.getWorldPosition(new THREE.Vector3());
-            modelRef.current.position.copy(position);
-            modelRef.current.visible = true;
-            placed = true;
-            setStatus('✓ Model placed! Rotate device to view from different angles.');
-            console.log('Model auto-placed on flat surface');
+          if (hitPose) {
+            reticle.visible = true;
+            reticle.matrix.fromArray(hitPose.transform.matrix);
+            reticle.matrixAutoUpdate = false;
+
+            // Update surface detection status
+            if (!surfaceDetected) {
+              surfaceDetected = true;
+              setStatus('✅ Flat surface found! Auto-placing model...');
+            }
+
+            // Auto-place model on first flat surface detection
+            if (modelRef.current && !placed) {
+              const position = new THREE.Vector3().setFromMatrixPosition(
+                new THREE.Matrix4().fromArray(hitPose.transform.matrix)
+              );
+              modelRef.current.position.copy(position);
+              modelRef.current.visible = true;
+              placed = true;
+
+              setStatus('✓ Model placed! Rotate device to view from different angles.');
+              console.log('✓ Model auto-placed on flat surface');
+            }
           }
         } else {
           reticle.visible = false;
+          if (!placed && surfaceDetected) {
+            surfaceDetected = false;
+            setStatus('📱 Point camera at a flat surface');
+          }
         }
 
         renderer.render(scene, camera);
@@ -427,11 +442,14 @@ function ARViewer() {
             zIndex: 20
           }}>
             <div style={{
-              fontSize: '30px',
+              fontSize: '14px',
               color: 'white',
-              textShadow: '0 0 10px rgba(0,0,0,0.7)'
+              textShadow: '0 0 10px rgba(0,0,0,0.7)',
+              background: 'rgba(0,0,0,0.5)',
+              padding: '10px 20px',
+              borderRadius: '20px'
             }}>
-              ◯ TAP TO PLACE
+              Move camera to find a flat surface
             </div>
           </div>
         )}
