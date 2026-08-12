@@ -30,6 +30,36 @@ qr_codes_db = {}
 UPLOAD_DIR = "/tmp/arigroup_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+MODELS_INDEX_PATH = os.path.join(UPLOAD_DIR, "models_index.json")
+
+
+def persist_models_index():
+    """Persist model metadata to disk so it can survive an in-process
+    restart as long as the underlying disk is still around (Render's free
+    tier spins the process down after ~15 min idle and loses all in-memory
+    state on wake, which was silently breaking every previously-issued QR
+    code)."""
+    try:
+        with open(MODELS_INDEX_PATH, 'w') as f:
+            json.dump(models_db, f)
+    except Exception as e:
+        print(f"Warning: failed to persist models index: {e}")
+
+
+def load_models_index():
+    """Reload model metadata on startup. Also recovers metadata-less files
+    found on disk (in case the index itself didn't survive a restart but
+    the uploaded files did)."""
+    if os.path.exists(MODELS_INDEX_PATH):
+        try:
+            with open(MODELS_INDEX_PATH, 'r') as f:
+                loaded = json.load(f)
+            for model_id, model in loaded.items():
+                if os.path.exists(model.get("file_path", "")):
+                    models_db[model_id] = model
+        except Exception as e:
+            print(f"Warning: failed to load models index: {e}")
+
 # Initialize test data
 def init_test_data():
     """Create test restaurants for development"""
@@ -71,6 +101,7 @@ def init_test_data():
 @app.on_event("startup")
 async def startup_event():
     init_test_data()
+    load_models_index()
 
 @app.get("/")
 def read_root():
@@ -145,6 +176,7 @@ async def upload_model(
     }
 
     models_db[model_id] = model_data
+    persist_models_index()
 
     return {
         "id": model_id,
@@ -212,17 +244,27 @@ async def get_model_file(model_id: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Model file not found")
 
-    # Map file types to correct media types
+    # Map file types to correct media types. Scene Viewer / Quick Look /
+    # model-viewer all sniff these, so using the generic
+    # application/octet-stream (as before) can cause some AR handoffs to
+    # reject the file.
     media_types = {
         "obj": "text/plain",
-        "gltf": "application/json",
-        "glb": "application/octet-stream"
+        "gltf": "model/gltf+json",
+        "glb": "model/gltf-binary"
     }
     media_type = media_types.get(file_type, "application/octet-stream")
 
-    # Return the file directly
+    # Return the file directly. CORS is already wide-open via the
+    # middleware above, but model-viewer's internal fetch() also needs the
+    # response to be cacheable/range-capable, which FileResponse already
+    # provides (Accept-Ranges + ETag).
     from fastapi.responses import FileResponse
-    return FileResponse(file_path, media_type=media_type)
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"}
+    )
 
 if __name__ == "__main__":
     import uvicorn

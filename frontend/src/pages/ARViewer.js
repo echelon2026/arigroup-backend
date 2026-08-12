@@ -223,9 +223,31 @@ function ARViewer() {
     }
   };
 
-  const initCameraMode = (scene, renderer, camera) => {
+  const initCameraMode = async (scene, renderer, camera) => {
     setArActive(false);
     setStatus('📱 Camera Mode: Tap to place the model');
+
+    // This fallback (no WebXR support) previously rendered a <video>
+    // element with no srcObject ever assigned, so it just showed a black
+    // screen with the model floating over nothing — no camera feed, real
+    // or mirrored. Wire the actual rear ("environment") camera here so
+    // there is a genuine passthrough to place the model over. Explicitly
+    // requesting the environment-facing camera also rules out the classic
+    // "mirror" complaint that comes from accidentally landing on the
+    // front/selfie camera.
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+    } catch (err) {
+      console.error('Camera fallback getUserMedia failed:', err);
+      setStatus('❌ Could not access the camera for the fallback view.');
+    }
 
     let placed = false;
     let rotationY = 0;
