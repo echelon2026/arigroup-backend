@@ -57,6 +57,7 @@ function ARViewer() {
 
       // Setup Three.js scene
       const scene = new THREE.Scene();
+      scene.scale.x = -1; // Flip horizontally to correct mirror
       sceneRef.current = scene;
 
       const camera = new THREE.PerspectiveCamera(
@@ -334,8 +335,7 @@ function ARViewer() {
           left: 0,
           width: '100%',
           height: '100%',
-          zIndex: 1,
-          transform: arActive ? 'scaleX(-1)' : 'none'
+          zIndex: 1
         }}
       />
 
