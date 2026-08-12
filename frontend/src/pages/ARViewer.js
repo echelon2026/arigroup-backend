@@ -57,7 +57,6 @@ function ARViewer() {
 
       // Setup Three.js scene
       const scene = new THREE.Scene();
-      scene.scale.x = -1; // Flip horizontally to correct mirror
       sceneRef.current = scene;
 
       const camera = new THREE.PerspectiveCamera(
@@ -66,6 +65,7 @@ function ARViewer() {
         0.1,
         1000
       );
+      camera.scale.x = -1; // Flip camera horizontally
 
       const renderer = new THREE.WebGLRenderer({
         antialias: true,
@@ -208,10 +208,14 @@ function ARViewer() {
 
             // Auto-place model on first flat surface detection
             if (modelRef.current && !placed) {
-              const position = new THREE.Vector3().setFromMatrixPosition(
-                new THREE.Matrix4().fromArray(hitPose.transform.matrix)
-              );
+              const matrix = new THREE.Matrix4().fromArray(hitPose.transform.matrix);
+              const position = new THREE.Vector3().setFromMatrixPosition(matrix);
+
+              // Flip X coordinate to match mirrored view
+              position.x *= -1;
+
               modelRef.current.position.copy(position);
+              modelRef.current.scale.x = -1; // Flip model horizontally
               modelRef.current.visible = true;
               placed = true;
 
