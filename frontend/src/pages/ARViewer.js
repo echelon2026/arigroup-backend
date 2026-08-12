@@ -320,7 +320,8 @@ function ARViewer() {
           width: '100%',
           height: '100%',
           objectFit: 'cover',
-          zIndex: 0
+          zIndex: 0,
+          display: arActive ? 'none' : 'block'
         }}
       />
 
@@ -333,7 +334,8 @@ function ARViewer() {
           left: 0,
           width: '100%',
           height: '100%',
-          zIndex: 1
+          zIndex: 1,
+          transform: arActive ? 'scaleX(-1)' : 'none'
         }}
       />
 
