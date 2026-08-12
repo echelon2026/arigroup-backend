@@ -54,9 +54,8 @@ function ARViewer() {
 
       const renderer = new THREE.WebGLRenderer({
         antialias: true,
-        alpha: true,
-        canvas: canvasRef.current,
-        preserveDrawingBuffer: true
+        alpha: false,
+        canvas: canvasRef.current
       });
       renderer.setPixelRatio(window.devicePixelRatio);
       renderer.setSize(window.innerWidth, window.innerHeight);
@@ -192,10 +191,13 @@ function ARViewer() {
 
             // Auto-place model on first flat surface detection
             if (modelRef.current && !placed) {
-              const position = new THREE.Vector3().setFromMatrixPosition(
-                new THREE.Matrix4().fromArray(hitPose.transform.matrix)
-              );
+              const hitMatrix = new THREE.Matrix4().fromArray(hitPose.transform.matrix);
+              const position = new THREE.Vector3();
+              const quaternion = new THREE.Quaternion();
+              const scale = new THREE.Vector3();
+              hitMatrix.decompose(position, quaternion, scale);
               modelRef.current.position.copy(position);
+              modelRef.current.quaternion.copy(quaternion);
               modelRef.current.visible = true;
               placed = true;
 
