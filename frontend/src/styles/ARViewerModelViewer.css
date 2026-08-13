@@ -156,26 +156,17 @@
   display: none;
 }
 
-.manual-ar-btn {
-  position: absolute;
-  bottom: 30px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 14px 28px;
-  background: #667eea;
-  color: white;
-  border: none;
-  border-radius: 30px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.35);
-  z-index: 50;
-  pointer-events: auto;
-}
-
-.manual-ar-btn:active {
-  transform: translateX(-50%) scale(0.97);
+/* The floating "View in your space" / "View in AR" button has been removed
+   from the component entirely (AR now launches from any tap on the
+   full-screen view). These rules are kept only as a hard defensive net —
+   if a stale/cached JS bundle or any future markup ever re-introduces an
+   element with this class, it must never be visible. */
+.manual-ar-btn,
+[slot='ar-button'],
+model-viewer::part(default-ar-button) {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
 /* Mobile optimizations */
