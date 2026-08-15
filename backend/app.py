@@ -275,16 +275,38 @@ async def get_model_file(model_id: str):
         "glb": "model/gltf-binary"
     }
     media_type = media_types.get(file_type, "application/octet-stream")
+    file_size = os.path.getsize(file_path)
 
-    # Return the file directly. CORS is already wide-open via the
-    # middleware above, but model-viewer's internal fetch() also needs the
-    # response to be cacheable/range-capable, which FileResponse already
-    # provides (Accept-Ranges + ETag).
+    # iOS Safari is stricter than Android/Chrome about CORS on binary
+    # model downloads: it wants the CORS headers present directly on the
+    # response for the actual GET (not just relying on the app-level
+    # CORSMiddleware) and is picky about Content-Length being explicit
+    # rather than left to chunked transfer. Spell everything out here so
+    # Safari's fetch() for the .glb doesn't get silently rejected.
     from fastapi.responses import FileResponse
     return FileResponse(
         file_path,
         media_type=media_type,
-        headers={"Cache-Control": "public, max-age=31536000, immutable"}
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Range",
+            "Content-Length": str(file_size),
+        }
+    )
+
+
+@app.options("/model/{model_id}")
+async def options_model(model_id: str):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content={"allow": ["GET", "OPTIONS"]},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Range",
+        }
     )
 
 if __name__ == "__main__":
