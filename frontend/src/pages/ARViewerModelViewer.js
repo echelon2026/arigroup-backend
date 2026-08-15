@@ -136,7 +136,8 @@ function ARViewerModelViewer() {
   });
   const [showDiag, setShowDiag] = useState(false);
 
-  const modelSrc = `${API_URL}/model/${modelId}`;
+  // Route model fetch through Vercel Edge Function proxy to bypass iOS QUIC issues
+  const modelSrc = `/api/model-proxy/${modelId}`;
 
   // Fetch the per-model scale that was set at upload time. Stored in a ref
   // (not state) so it never becomes a React-controlled prop on
