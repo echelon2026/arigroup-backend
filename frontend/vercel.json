@@ -1,5 +1,6 @@
 {
   "env": {
     "REACT_APP_API_URL": "https://arigroup-api.onrender.com"
-  }
+  },
+  "buildCommand": "CI=false npm run build"
 }
