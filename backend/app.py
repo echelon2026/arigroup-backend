@@ -283,6 +283,16 @@ async def get_model_file(model_id: str):
     # CORSMiddleware) and is picky about Content-Length being explicit
     # rather than left to chunked transfer. Spell everything out here so
     # Safari's fetch() for the .glb doesn't get silently rejected.
+    #
+    # Starlette's FileResponse already streams the file in chunks (rather
+    # than buffering it all in memory) and, given a Range request header,
+    # already serves a proper 206 partial response — both needed so a slow
+    # connection (Render free tier + a large GLB, worse on iOS) gets bytes
+    # incrementally instead of waiting on one huge buffered response.
+    # Accept-Ranges is spelled out explicitly here (not just left to
+    # FileResponse's own default) so clients — including model-viewer's own
+    # loader and the app's independent reachability diagnostic — can see
+    # from the headers alone that range/resumable requests are supported.
     from fastapi.responses import FileResponse
     return FileResponse(
         file_path,
@@ -292,6 +302,7 @@ async def get_model_file(model_id: str):
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Range",
+            "Accept-Ranges": "bytes",
             "Content-Length": str(file_size),
         }
     )

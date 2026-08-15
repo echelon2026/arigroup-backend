@@ -16,7 +16,21 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 // Without this, the viewer just looks broken ("Loading..." forever) during
 // that window, which is very likely what was happening during testing.
 const COLD_START_HINT_MS = 8000;
-const HARD_TIMEOUT_MS = 60000;
+// A cold Render boot (30-60s) plus the actual download/parse of a large,
+// texture-heavy GLB can together comfortably exceed a minute on a slow iOS
+// connection — the old 60s budget was tuned for the cold-start case alone
+// and was flagging genuinely-still-loading large files as timed out.
+const HARD_TIMEOUT_MS = 90000;
+
+// Used only by the on-device reachability diagnostic below (a tiny
+// Range: bytes=0-0 probe, independent of model-viewer's own fetch of the
+// full GLB). The original 8s budget was tuned for a normal small API call,
+// not for reaching a multi-MB model URL while a Render free-tier instance
+// is still spinning up from a cold start — that mismatch was reporting
+// "Model URL fetch: ✗ failed (timed out after 8000ms)" in the diagnostics
+// panel even when the real download (governed by HARD_TIMEOUT_MS above)
+// was still very plausibly going to succeed.
+const DIAG_FETCH_TIMEOUT_MS = 30000;
 
 // The fetch progress event only tracks bytes downloaded — it hits 100%
 // as soon as the last byte of the GLB arrives over the network, which is
@@ -205,7 +219,7 @@ function ARViewerModelViewer() {
     setDiag((d) => ({ ...d, mvElementFound }));
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), DIAG_FETCH_TIMEOUT_MS);
     console.log(`[AR][diag] Independent fetch check: ${modelSrc}`);
     fetch(modelSrc, { method: 'GET', headers: { Range: 'bytes=0-0' }, signal: controller.signal })
       .then((res) => {
@@ -218,7 +232,7 @@ function ARViewerModelViewer() {
         setDiag((d) => ({ ...d, fetchCheck: res.ok || res.status === 206 ? 'ok' : 'error', fetchDetail: detail }));
       })
       .catch((err) => {
-        const detail = err?.name === 'AbortError' ? 'timed out after 8000ms' : String(err?.message || err);
+        const detail = err?.name === 'AbortError' ? `timed out after ${DIAG_FETCH_TIMEOUT_MS}ms` : String(err?.message || err);
         console.error(`[AR][diag] Fetch check FAILED: ${detail}`);
         setDiag((d) => ({ ...d, fetchCheck: 'error', fetchDetail: detail }));
       })
