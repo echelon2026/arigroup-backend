@@ -18,6 +18,21 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 const COLD_START_HINT_MS = 8000;
 const HARD_TIMEOUT_MS = 60000;
 
+// The fetch progress event only tracks bytes downloaded — it hits 100%
+// as soon as the last byte of the GLB arrives over the network, which is
+// NOT the same moment as model-viewer's 'load' event. Between those two
+// points three.js still has to parse the buffer, decode any embedded
+// textures, and upload everything to the GPU, and none of that reports
+// progress. For a texture-heavy scan (e.g. a Polycam export with a large
+// embedded JPEG) that gap can be several seconds to tens of seconds even
+// on fast hardware. Previously the status text just froze at whatever
+// the last sub-100% number was (commonly "99%", since progress rarely
+// lands on an exact 100 before the final chunk), which reads as a hang
+// even though the page is still working and the existing HARD_TIMEOUT_MS
+// watchdog below will still catch a genuine failure. This is a second,
+// shorter timer purely for user-facing feedback during that decode gap.
+const PARSE_STALL_HINT_MS = 12000;
+
 // Real-world AR display cap, in meters, for the model's longest dimension.
 // glTF/GLB treats 1 unit = 1 meter, but a lot of export pipelines (and, in
 // this app's case, an upload-time "scale" field that was collected but
@@ -64,6 +79,22 @@ function ARViewerModelViewer() {
   const usdzBlobUrlRef = useRef(null);
   const usdzPreparingRef = useRef(false);
   const usdzFailedRef = useRef(false);
+  // Tracks the decode/parse gap between "download finished" (100% progress)
+  // and the 'load' event actually firing — see PARSE_STALL_HINT_MS above.
+  const parseStallTimerRef = useRef(null);
+  const downloadCompleteAtRef = useRef(null);
+  const mountedAtRef = useRef(typeof performance !== 'undefined' ? performance.now() : Date.now());
+  // Ticks once/2s only during the parse/decode phase (between download-
+  // complete and 'load'). If these heartbeats stop appearing in the console
+  // while the UI is still frozen on "Processing model…", the main JS thread
+  // itself is blocked (e.g. a synchronous, slow image decode) — timers
+  // literally cannot fire, which is also why PARSE_STALL_HINT_MS/
+  // HARD_TIMEOUT_MS can silently fail to update the UI in that scenario. If
+  // heartbeats keep ticking right up to HARD_TIMEOUT_MS, the thread is fine
+  // and something async (e.g. prepareUSDZ, a hung fetch for a sub-resource)
+  // is what never resolved. This distinction is the single most useful
+  // signal for diagnosing an iOS-only silent hang after the fact.
+  const heartbeatTimerRef = useRef(null);
 
   const [status, setStatus] = useState('Loading 3D model...');
   const [modelError, setModelError] = useState(false);
@@ -116,10 +147,93 @@ function ARViewerModelViewer() {
     };
   }, [modelId]);
 
+  // Global crash trap. model-viewer's own 'error' custom event only fires
+  // for failures *inside* its own loader pipeline that it catches and
+  // reports itself — it is not a catch-all. A synchronous exception thrown
+  // deep inside three.js's GLTF/texture parsing (or a rejected promise
+  // nobody in that call chain awaits/catches) can crash the work in
+  // progress without ever reaching that event, which would look exactly
+  // like "stuck at Processing model…, nothing in the console, no error
+  // shown" — matching this bug report. window 'error'/'unhandledrejection'
+  // catch those cases regardless of where in the page they originate, so
+  // this is the backstop for exactly the class of failure the structured
+  // handlers can miss. Also logs a one-time device/GPU capability snapshot
+  // on iOS, since a 4096x4096 texture exceeding the device's actual
+  // MAX_TEXTURE_SIZE (older A-series GPUs cap at 4096, some report less
+  // under memory pressure) is a concrete, checkable explanation for a
+  // decode/upload stage that never completes.
+  useEffect(() => {
+    const onWindowError = (event) => {
+      console.error('[AR] Uncaught window error during model load/processing:', {
+        message: event?.message,
+        filename: event?.filename,
+        lineno: event?.lineno,
+        colno: event?.colno,
+        error: event?.error,
+        elapsedMs: Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - mountedAtRef.current),
+      });
+      if (!modelReady) {
+        setModelError(true);
+        setStatus(`❌ A page error interrupted model loading: ${event?.message || 'unknown error'}. Try again.`);
+      }
+    };
+    const onUnhandledRejection = (event) => {
+      console.error('[AR] Unhandled promise rejection during model load/processing:', {
+        reason: event?.reason,
+        elapsedMs: Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - mountedAtRef.current),
+      });
+      if (!modelReady) {
+        setModelError(true);
+        setStatus(`❌ A background task failed while loading the model: ${event?.reason?.message || event?.reason || 'unknown error'}. Try again.`);
+      }
+    };
+    window.addEventListener('error', onWindowError);
+    window.addEventListener('unhandledrejection', onUnhandledRejection);
+
+    if (isIOS) {
+      try {
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+        if (gl) {
+          const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+          const dbgInfo = gl.getExtension('WEBGL_debug_renderer_info');
+          const renderer = dbgInfo ? gl.getParameter(dbgInfo.UNMASKED_RENDERER_WEBGL) : 'unknown (WEBGL_debug_renderer_info unavailable)';
+          console.log(`[AR] iOS WebGL capability check: MAX_TEXTURE_SIZE=${maxTextureSize}, renderer=${renderer}, devicePixelRatio=${window.devicePixelRatio}`);
+          if (maxTextureSize < 4096) {
+            console.warn(`[AR] Device's MAX_TEXTURE_SIZE (${maxTextureSize}) is smaller than this model's 4096x4096 texture — this is a likely cause of a silent decode/upload failure.`);
+          }
+        } else {
+          console.warn('[AR] Could not get a WebGL context to check MAX_TEXTURE_SIZE on iOS.');
+        }
+      } catch (e) {
+        console.warn('[AR] WebGL capability check failed:', e);
+      }
+    }
+
+    return () => {
+      window.removeEventListener('error', onWindowError);
+      window.removeEventListener('unhandledrejection', onUnhandledRejection);
+    };
+  }, [modelReady]);
+
   const disarmTapListener = useCallback(() => {
     if (tapListenerRef.current) {
       document.removeEventListener('pointerdown', tapListenerRef.current);
       tapListenerRef.current = null;
+    }
+  }, []);
+
+  const clearParseStallTimer = useCallback(() => {
+    if (parseStallTimerRef.current) {
+      clearTimeout(parseStallTimerRef.current);
+      parseStallTimerRef.current = null;
+    }
+  }, []);
+
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
     }
   }, []);
 
@@ -240,7 +354,14 @@ function ARViewerModelViewer() {
   }, [modelSrc, disarmTapListener, prepareIOSQuickLook]);
 
   const handleLoad = useCallback(() => {
-    console.log('[AR] Model loaded');
+    clearParseStallTimer();
+    stopHeartbeat();
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const parseMs = downloadCompleteAtRef.current != null ? Math.round(now - downloadCompleteAtRef.current) : null;
+    console.log(
+      `[AR] Model loaded (total ${Math.round(now - mountedAtRef.current)}ms` +
+      (parseMs != null ? `, parse/decode phase ${parseMs}ms` : '') + ')'
+    );
     setModelReady(true);
     setModelError(false);
     setColdStartHint(false);
@@ -291,15 +412,29 @@ function ARViewerModelViewer() {
         }, 500);
       }
     }
-  }, [applyArSafeScale, launchAR, prepareIOSQuickLook]);
+  }, [applyArSafeScale, launchAR, prepareIOSQuickLook, clearParseStallTimer, stopHeartbeat]);
 
   const handleError = useCallback((event) => {
+    clearParseStallTimer();
+    stopHeartbeat();
     const detail = event?.detail;
-    console.error('[AR] model-viewer load error:', detail, event);
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    // Log everything useful for diagnosing a silent failure after the fact
+    // — which phase it failed in, how long it had been running, and the
+    // exact URL involved — instead of just the bare model-viewer event,
+    // which by itself doesn't say whether this was a network failure, a
+    // parse failure, or something else.
+    console.error('[AR] model-viewer load error:', {
+      detail,
+      src: modelSrc,
+      phase: downloadCompleteAtRef.current != null ? 'parse/decode' : 'download',
+      elapsedMs: Math.round(now - mountedAtRef.current),
+      event,
+    });
     setModelError(true);
     const reason = detail?.type ? ` (${detail.type})` : '';
     setStatus(`❌ Could not load this model${reason}. It may have expired, or the server is waking up — try again in a moment.`);
-  }, []);
+  }, [modelSrc, clearParseStallTimer, stopHeartbeat]);
 
   const handleProgress = useCallback((event) => {
     const pct = Math.round((event?.detail?.totalProgress || 0) * 100);
@@ -308,10 +443,31 @@ function ARViewerModelViewer() {
       setStatus('Connecting to server…');
     } else if (pct < 100) {
       setStatus(`Loading 3D model… ${pct}%`);
-    } else {
-      console.log('[AR] Model fetch complete, parsing…');
+    } else if (downloadCompleteAtRef.current == null) {
+      // Download just finished. model-viewer/three.js still has to parse
+      // the buffer, decode any embedded textures, and upload to the GPU
+      // before 'load' fires — none of which reports progress, so without
+      // this the status text would just sit frozen on the last percentage
+      // (typically "99%") and look hung even while it's still working.
+      downloadCompleteAtRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      console.log('[AR] Model fetch complete, parsing/decoding…');
+      setStatus('Processing model…');
+      clearParseStallTimer();
+      parseStallTimerRef.current = setTimeout(() => {
+        console.warn(`[AR] Still parsing/decoding ${PARSE_STALL_HINT_MS}ms after download finished — likely a large embedded texture`);
+        setStatus('⏳ Still processing… high-detail models with large textures can take a bit longer');
+      }, PARSE_STALL_HINT_MS);
+      // See heartbeatTimerRef declaration above for why this matters: it's
+      // the only way to tell "main thread blocked" apart from "a promise
+      // never resolved" after the fact, from console logs alone.
+      stopHeartbeat();
+      const startedAt = downloadCompleteAtRef.current;
+      heartbeatTimerRef.current = setInterval(() => {
+        const nowTick = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        console.log(`[AR] …still in parse/decode, ${Math.round(nowTick - startedAt)}ms elapsed (main thread is not blocked)`);
+      }, 2000);
     }
-  }, []);
+  }, [clearParseStallTimer, stopHeartbeat]);
 
   const handleArStatus = useCallback((event) => {
     const arStatus = event?.detail?.status;
@@ -348,8 +504,10 @@ function ARViewerModelViewer() {
       el.removeEventListener('progress', handleProgress);
       el.removeEventListener('ar-status', handleArStatus);
       disarmTapListener();
+      clearParseStallTimer();
+      stopHeartbeat();
     };
-  }, [handleLoad, handleError, handleProgress, handleArStatus, disarmTapListener]);
+  }, [handleLoad, handleError, handleProgress, handleArStatus, disarmTapListener, clearParseStallTimer, stopHeartbeat]);
 
   // Cold-start / hard-timeout watchdog, independent of model-viewer's own
   // events (those never fire at all if the fetch just hangs).
@@ -363,8 +521,18 @@ function ARViewerModelViewer() {
 
     const hardTimer = setTimeout(() => {
       if (!modelReady && !modelError) {
+        const stalledInParse = downloadCompleteAtRef.current != null;
+        console.error(
+          `[AR] Hard timeout after ${HARD_TIMEOUT_MS}ms — never reached 'load' or 'error'. ` +
+          `Stalled in: ${stalledInParse ? 'parse/decode (download had completed)' : 'download'}.`
+        );
+        stopHeartbeat();
         setModelError(true);
-        setStatus('❌ Timed out loading the model. Please check your connection and try again.');
+        setStatus(
+          stalledInParse
+            ? '❌ Timed out processing this model. It may have a very large texture — try again, or use a lower-resolution export.'
+            : '❌ Timed out loading the model. Please check your connection and try again.'
+        );
       }
     }, HARD_TIMEOUT_MS);
 
@@ -372,7 +540,7 @@ function ARViewerModelViewer() {
       clearTimeout(hintTimer);
       clearTimeout(hardTimer);
     };
-  }, [modelReady, modelError]);
+  }, [modelReady, modelError, stopHeartbeat]);
 
   // Real, tap-free auto-placement is only possible via a raw in-page WebXR
   // hit-test session (Chrome on ARCore-capable Android). Scene Viewer and
@@ -414,6 +582,10 @@ function ARViewerModelViewer() {
     arLaunchedRef.current = false;
     usdzBlobUrlRef.current = null;
     usdzFailedRef.current = false;
+    downloadCompleteAtRef.current = null;
+    mountedAtRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    clearParseStallTimer();
+    stopHeartbeat();
     disarmTapListener();
     const el = modelViewerRef.current;
     if (el) {
