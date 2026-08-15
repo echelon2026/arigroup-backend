@@ -36,3 +36,4 @@ dist/
 *.pot
 .coverage
 .pytest_cache/
+.vercel
