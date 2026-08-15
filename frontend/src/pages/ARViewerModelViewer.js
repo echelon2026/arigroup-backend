@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 // Bundling the library directly (instead of injecting a <script> tag that
 // points at a CDN at runtime) guarantees the <model-viewer> custom element
 // is registered before React ever tries to render it, and removes a whole
@@ -71,8 +71,25 @@ const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.
 // silent, uncancelled request in flight.
 const METADATA_FETCH_TIMEOUT_MS = 5000;
 
+// AR Code pattern: on iOS, skip the web 3D viewer entirely and hand off
+// straight to a server-generated USDZ file. Safari recognizes a
+// `model/vnd.usdz+zip` response and opens it directly in Quick Look with no
+// page render, no WebGL context, and none of the camera-permission/gesture
+// timing issues the in-page model-viewer + prepareUSDZ() flow further below
+// has needed so much defensive code to work around. See
+// frontend/api/usdz/[modelId].js for the conversion itself.
+//
+// `?usdz=failed` is how that endpoint reports a conversion failure back to
+// this page (a 302 redirect, not a dead link) — in that one case only, fall
+// through to the existing client-side model-viewer/prepareUSDZ() flow below
+// instead of looping back into the same redirect.
+const usdzRedirectUrl = (modelId) => `/api/usdz/${modelId}`;
+
 function ARViewerModelViewer() {
   const { modelId } = useParams();
+  const [searchParams] = useSearchParams();
+  const usdzFailed = searchParams.get('usdz') === 'failed';
+  const shouldRedirectToUsdz = isIOS && !usdzFailed;
   const modelViewerRef = useRef(null);
   const metaScaleRef = useRef(1);
   const arLaunchedRef = useRef(false);
@@ -138,6 +155,22 @@ function ARViewerModelViewer() {
 
   // Route model fetch through Vercel Edge Function proxy to bypass iOS QUIC issues
   const modelSrc = `/api/model-proxy/${modelId}`;
+
+  // AR Code redirect — declared first among the effects so it fires before
+  // any of the diagnostics/metadata effects below get a chance to do
+  // meaningful work; `window.location.replace` unloads the page almost
+  // immediately once it runs. `replace` (not a normal navigation) so the
+  // intermediate USDZ URL never ends up in browser history.
+  useEffect(() => {
+    if (shouldRedirectToUsdz) {
+      console.log('[AR] iOS detected — redirecting to server-generated USDZ for native Quick Look, skipping the web 3D viewer entirely.');
+      window.location.replace(usdzRedirectUrl(modelId));
+    }
+    // Intentionally only depends on the values that decide whether to fire,
+    // not on modelId identity churn — this is a one-shot redirect, not a
+    // sync effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shouldRedirectToUsdz, modelId]);
 
   // Fetch the per-model scale that was set at upload time. Stored in a ref
   // (not state) so it never becomes a React-controlled prop on
@@ -729,6 +762,24 @@ function ARViewerModelViewer() {
       )}
     </>
   );
+
+  // Nothing below this point (model-viewer, WebGL, diagnostics) should ever
+  // mount on iOS in the normal case — the redirect effect above is already
+  // navigating the page away. Render a minimal placeholder for the brief
+  // window before that navigation completes, instead of paying for the
+  // full model-viewer/WebGL setup just to immediately tear it down.
+  if (shouldRedirectToUsdz) {
+    return (
+      <div className="ar-viewer-mv">
+        <div className="ar-status-overlay">
+          <div className="status-box">
+            <p>Opening AR…</p>
+            <div className="spinner" aria-label="loading" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="ar-viewer-mv">
