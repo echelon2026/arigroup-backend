@@ -7,7 +7,6 @@ from io import BytesIO
 import uuid
 from datetime import datetime
 import json
-import zipfile
 
 load_dotenv()
 
@@ -138,91 +137,6 @@ async def get_restaurant(restaurant_id: str):
         raise HTTPException(status_code=404, detail="Restaurant not found")
     return restaurants_db[restaurant_id]
 
-def create_usda_content(glb_filename):
-    """Create minimal USDA file that references the GLB"""
-    return f"""#usda 1.0
-(
-    customLayerData = {{
-        string creator = "arigroup-space"
-    }}
-    endTimeCode = 24
-    metersPerUnit = 1
-    startTimeCode = 0
-    timeCodesPerSecond = 24
-    upAxis = "Y"
-)
-
-over "Xform" {{
-    over "Model" {{
-        def Mesh "mesh0" {{
-            uniform token[] faceVertexCounts = []
-            uniform token[] faceVertexIndices = []
-            rel material:binding = </Xform/Material>
-            point3f[] points = []
-            normal3f[] normals = []
-
-            custom vector3d extentsHint = [(0, 0, 0), (1, 1, 1)]
-        }}
-    }}
-
-    def "Material" (
-        prepend references = @./{glb_filename}@
-    )
-    {{
-    }}
-}}
-"""
-
-def create_content_types_xml():
-    """Create [Content_Types].xml required for USDZ"""
-    return """<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.usdz+xml"/>
-  <Default Extension="xml" ContentType="application/vnd.usdz+xml"/>
-  <Default Extension="usda" ContentType="text/plain"/>
-  <Default Extension="glb" ContentType="application/octet-stream"/>
-  <Override PartName="/model.usda" ContentType="text/plain"/>
-</Types>
-"""
-
-def create_rels_xml():
-    """Create root .rels file for USDZ"""
-    return """<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="StartSession" Type="http://schemas.pixar.com/usdz/v1/ar" Target="./model.usda"/>
-  <Relationship Id="model" Type="http://schemas.pixar.com/usdz/v1/ref" Target="./model.glb"/>
-</Relationships>
-"""
-
-def convert_glb_to_usdz(glb_file_path: str, usdz_file_path: str):
-    """Convert GLB to USDZ by creating a ZIP archive with proper structure"""
-    try:
-        # Read GLB file
-        with open(glb_file_path, 'rb') as f:
-            glb_data = f.read()
-
-        # Create USDZ ZIP
-        with zipfile.ZipFile(usdz_file_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # Add USDA file
-            usda_content = create_usda_content('model.glb')
-            zf.writestr('model.usda', usda_content)
-
-            # Add GLB file
-            zf.writestr('model.glb', glb_data)
-
-            # Add [Content_Types].xml
-            content_types = create_content_types_xml()
-            zf.writestr('[Content_Types].xml', content_types)
-
-            # Add _rels/.rels
-            rels_content = create_rels_xml()
-            zf.writestr('_rels/.rels', rels_content)
-
-        return True
-    except Exception as e:
-        print(f"Error converting GLB to USDZ: {e}")
-        return False
-
 @app.post("/models/upload")
 async def upload_model(
     restaurant_id: str = Form(...),
@@ -248,16 +162,6 @@ async def upload_model(
     with open(file_path, 'wb') as f:
         f.write(content)
 
-    # Convert GLB to USDZ for iOS AR support
-    usdz_path = None
-    if file_ext.lower() == 'glb':
-        usdz_path = f"{UPLOAD_DIR}/{restaurant_id}/{model_id}.usdz"
-        if convert_glb_to_usdz(file_path, usdz_path):
-            print(f"✓ Converted {model_id}.glb to USDZ")
-        else:
-            print(f"✗ Failed to convert {model_id}.glb to USDZ")
-            usdz_path = None
-
     # Save metadata
     model_data = {
         "id": model_id,
@@ -268,8 +172,7 @@ async def upload_model(
         "file_type": file_ext,
         "file_size": len(content),
         "scale": scale,
-        "created_at": datetime.utcnow().isoformat(),
-        "usdz_path": usdz_path  # Track USDZ for iOS
+        "created_at": datetime.utcnow().isoformat()
     }
 
     models_db[model_id] = model_data
@@ -278,8 +181,7 @@ async def upload_model(
     return {
         "id": model_id,
         "message": "Model uploaded successfully",
-        "file_path": file_path,
-        "usdz_path": usdz_path
+        "file_path": file_path
     }
 
 @app.get("/models/{restaurant_id}")
@@ -396,36 +298,6 @@ async def get_model_file(model_id: str):
         file_path,
         media_type=media_type,
         headers={
-            "Cache-Control": "public, max-age=3600",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Range",
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(file_size),
-        }
-    )
-
-
-@app.get("/model/{model_id}/usdz")
-async def get_model_usdz(model_id: str):
-    """Serve pre-converted USDZ file for iOS AR"""
-    if model_id not in models_db:
-        raise HTTPException(status_code=404, detail="Model not found")
-
-    model = models_db[model_id]
-    usdz_path = model.get("usdz_path")
-
-    if not usdz_path or not os.path.exists(usdz_path):
-        raise HTTPException(status_code=404, detail="USDZ not available for this model")
-
-    file_size = os.path.getsize(usdz_path)
-
-    from fastapi.responses import FileResponse
-    return FileResponse(
-        usdz_path,
-        media_type="model/vnd.usdz+zip",
-        headers={
-            "Content-Disposition": f'inline; filename="{model_id}.usdz"',
             "Cache-Control": "public, max-age=3600",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
