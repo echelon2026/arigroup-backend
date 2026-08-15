@@ -103,6 +103,25 @@ function ARViewerModelViewer() {
   const [coldStartHint, setColdStartHint] = useState(false);
   const [instantArAvailable, setInstantArAvailable] = useState(false);
 
+  // On-device diagnostics. This exists because the reported failure mode —
+  // black screen stuck on "Processing model" on iOS, working fine on
+  // Android with the identical code — has several plausible root causes
+  // (library never registered, model URL unreachable from this browser
+  // specifically, parse/decode hang, AR just genuinely unsupported) that
+  // all look identical from the outside, and the person hitting this is
+  // very likely on a phone with no attached console. Surfacing these
+  // checks directly in the UI (see the diag panel in the render below)
+  // means the failure can be diagnosed from a screenshot of the phone
+  // itself instead of requiring Safari's remote-debugging-over-USB setup.
+  const [diag, setDiag] = useState({
+    mvDefined: null,       // is the <model-viewer> custom element registered at all?
+    mvElementFound: null,  // did our ref actually attach to a real DOM element?
+    fetchCheck: 'pending', // 'pending' | 'ok' | 'error' — independent fetch of modelSrc
+    fetchDetail: '',
+    canAR: null,           // raw canActivateAR reading, set once the model loads
+  });
+  const [showDiag, setShowDiag] = useState(false);
+
   const modelSrc = `${API_URL}/model/${modelId}`;
 
   // Fetch the per-model scale that was set at upload time. Stored in a ref
@@ -146,6 +165,73 @@ function ARViewerModelViewer() {
       clearTimeout(timeoutId);
     };
   }, [modelId]);
+
+  // Diagnostics: run once, right on mount, ahead of everything else.
+  //
+  // 1. Is <model-viewer> actually a registered custom element? The
+  //    `import '@google/model-viewer'` at the top of this file calls
+  //    customElements.define('model-viewer', ...) synchronously as a side
+  //    effect of that import, so this should always read true by the time
+  //    this component mounts. If it's false, the library's JS never
+  //    executed on this device — a failed/blocked chunk load, a content
+  //    blocker, or (rarely) an engine that choked on some syntax in the
+  //    bundle — and nothing downstream (3D render, AR, canActivateAR) can
+  //    possibly work. That's a fundamentally different failure than "the
+  //    model is just slow to parse", so it's checked first and, if it
+  //    fails, short-circuits straight to a clear error instead of leaving
+  //    the user staring at "Loading 3D model..." with no forward progress.
+  // 2. Did the <model-viewer> element actually mount in the DOM?
+  // 3. Is modelSrc actually fetchable from *this* browser? Runs as a fetch
+  //    fully independent of model-viewer's own internal loading, so a CORS
+  //    rejection, TLS/network block, or server error is visible
+  //    immediately and explicitly — instead of only ever showing up
+  //    indirectly as a silent hang or a bare model-viewer 'error' event
+  //    that may or may not fire depending on exactly where its internal
+  //    pipeline failed.
+  useEffect(() => {
+    const mvDefined = typeof window !== 'undefined' && !!window.customElements?.get('model-viewer');
+    console.log(`[AR][diag] <model-viewer> custom element registered: ${mvDefined}`);
+    setDiag((d) => ({ ...d, mvDefined }));
+
+    if (!mvDefined) {
+      console.error('[AR][diag] CRITICAL: <model-viewer> is not registered — the model-viewer library failed to load/execute on this device/browser.');
+      setModelError(true);
+      setStatus('❌ The AR viewer library failed to load on this device/browser. Try reloading the page, or switch browsers.');
+      return undefined;
+    }
+
+    const mvElementFound = !!modelViewerRef.current;
+    console.log(`[AR][diag] <model-viewer> DOM element present: ${mvElementFound}`);
+    setDiag((d) => ({ ...d, mvElementFound }));
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    console.log(`[AR][diag] Independent fetch check: ${modelSrc}`);
+    fetch(modelSrc, { method: 'GET', headers: { Range: 'bytes=0-0' }, signal: controller.signal })
+      .then((res) => {
+        const detail = `HTTP ${res.status} ${res.statusText}; content-type=${res.headers.get('content-type') || 'n/a'}; content-length=${res.headers.get('content-length') || 'n/a'}; accept-ranges=${res.headers.get('accept-ranges') || 'n/a'}`;
+        console.log(`[AR][diag] Fetch check result: ${detail}`);
+        // 200 (server ignored Range) or 206 (partial content honored) both
+        // mean the URL is genuinely reachable; anything else is a real
+        // problem worth flagging even though model-viewer's own fetch is
+        // still what actually loads the model.
+        setDiag((d) => ({ ...d, fetchCheck: res.ok || res.status === 206 ? 'ok' : 'error', fetchDetail: detail }));
+      })
+      .catch((err) => {
+        const detail = err?.name === 'AbortError' ? 'timed out after 8000ms' : String(err?.message || err);
+        console.error(`[AR][diag] Fetch check FAILED: ${detail}`);
+        setDiag((d) => ({ ...d, fetchCheck: 'error', fetchDetail: detail }));
+      })
+      .finally(() => clearTimeout(timeoutId));
+
+    return () => {
+      controller.abort();
+      clearTimeout(timeoutId);
+    };
+    // Runs once on mount only — this is a one-shot capability/reachability
+    // check, not something that should re-run on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Global crash trap. model-viewer's own 'error' custom event only fires
   // for failures *inside* its own loader pipeline that it catches and
@@ -373,6 +459,7 @@ function ARViewerModelViewer() {
     // accurate once the model itself has loaded.
     const canAR = !!modelViewerRef.current?.canActivateAR;
     setArSupported(canAR);
+    setDiag((d) => ({ ...d, canAR }));
     console.log(`[AR] canActivateAR=${canAR} isIOS=${isIOS} isAndroid=${isAndroid}`);
     setStatus(canAR ? '📱 Launching AR...' : '✓ Model loaded');
 
@@ -598,6 +685,36 @@ function ARViewerModelViewer() {
     }
   };
 
+  // Renders the on-device diagnostics tab/panel described above. Shared
+  // between the normal view and the error screen so it's available
+  // regardless of which state the component ends up stuck in — that's the
+  // whole point, since the failure being diagnosed is exactly the case
+  // where the person hitting it has no other way to see what happened.
+  const renderDiagPanel = () => (
+    <>
+      <button
+        className="diag-tab"
+        onClick={() => setShowDiag((v) => !v)}
+        aria-label="Toggle diagnostics"
+      >
+        🐞
+      </button>
+      {showDiag && (
+        <div className="diag-panel">
+          <p><strong>model-viewer registered:</strong> {diag.mvDefined === null ? '…' : diag.mvDefined ? '✓ yes' : '✗ NO'}</p>
+          <p><strong>&lt;model-viewer&gt; element:</strong> {diag.mvElementFound === null ? '…' : diag.mvElementFound ? '✓ found' : '✗ missing'}</p>
+          <p><strong>Model URL fetch:</strong> {diag.fetchCheck === 'pending' ? '… checking' : diag.fetchCheck === 'ok' ? '✓ ok' : '✗ failed'}</p>
+          {diag.fetchDetail && <p className="diag-detail">{diag.fetchDetail}</p>}
+          <p><strong>canActivateAR:</strong> {diag.canAR === null ? '… (unknown until model loads)' : diag.canAR ? '✓ true' : '✗ false'}</p>
+          <p><strong>Model loaded:</strong> {modelReady ? '✓ yes' : '✗ not yet'}</p>
+          <p><strong>Platform:</strong> {isIOS ? 'iOS' : isAndroid ? 'Android' : 'other'}</p>
+          <p className="diag-detail">{typeof navigator !== 'undefined' ? navigator.userAgent : ''}</p>
+          <p className="diag-detail">src: {modelSrc}</p>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div className="ar-viewer-mv">
       {!modelError ? (
@@ -658,6 +775,8 @@ function ARViewerModelViewer() {
           >
             ✕ Exit
           </button>
+
+          {renderDiagPanel()}
         </>
       ) : (
         <div className="error-screen">
@@ -668,6 +787,8 @@ function ARViewerModelViewer() {
               Return to Dashboard
             </button>
           </div>
+
+          {renderDiagPanel()}
         </div>
       )}
     </div>

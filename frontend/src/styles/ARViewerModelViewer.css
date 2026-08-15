@@ -169,6 +169,67 @@ model-viewer::part(default-ar-button) {
   pointer-events: none !important;
 }
 
+/* On-device diagnostics tab + panel. Purpose-built for debugging the
+   "black screen / stuck on Processing model, iOS only" class of bug from
+   the phone itself, with no attached console — see renderDiagPanel() in
+   ARViewerModelViewer.js. Small and out-of-the-way by default (collapsed
+   tab), never covers the model or blocks interaction with it. */
+.diag-tab {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  font-size: 16px;
+  cursor: pointer;
+  pointer-events: auto;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.diag-panel {
+  position: absolute;
+  bottom: 64px;
+  left: 20px;
+  max-width: min(360px, calc(100vw - 40px));
+  max-height: 50vh;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.85);
+  color: #eee;
+  padding: 14px 16px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  pointer-events: auto;
+  z-index: 200;
+  backdrop-filter: blur(6px);
+}
+
+.diag-panel p {
+  margin: 0 0 6px 0;
+  word-break: break-word;
+}
+
+.diag-panel p:last-child {
+  margin-bottom: 0;
+}
+
+.diag-panel strong {
+  color: #9fb4ff;
+}
+
+.diag-detail {
+  color: #aaa;
+  font-family: monospace;
+  font-size: 10px;
+}
+
 /* Mobile optimizations */
 @media (max-width: 768px) {
   .status-box {
