@@ -5,11 +5,17 @@ export const config = {
 const API_URL = 'https://arigroup-api.onrender.com';
 
 export default async (request) => {
-  const url = new URL(request.url);
-  const modelId = url.pathname.split('/').pop();
+  let modelId;
+  try {
+    const url = new URL(request.url);
+    modelId = url.pathname.split('/').pop();
 
-  if (!modelId) {
-    return new Response('Model ID required', { status: 400 });
+    if (!modelId) {
+      return new Response('Model ID required', { status: 400 });
+    }
+  } catch (parseErr) {
+    console.error('URL parse error:', parseErr);
+    return new Response(`URL parse failed: ${parseErr.message}`, { status: 400 });
   }
 
   try {
@@ -39,7 +45,8 @@ export default async (request) => {
       respHeaders['cache-control'] = upstream.headers.get('cache-control');
     }
 
-    return new Response(upstream.body, {
+    const body = await upstream.arrayBuffer();
+    return new Response(body, {
       status: upstream.status,
       headers: respHeaders,
     });
