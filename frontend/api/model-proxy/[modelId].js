@@ -5,7 +5,8 @@ export const config = {
 const API_URL = 'https://arigroup-api.onrender.com';
 
 export default async (request) => {
-  const { modelId } = request.query;
+  const url = new URL(request.url);
+  const modelId = url.pathname.split('/').pop();
 
   if (!modelId) {
     return new Response('Model ID required', { status: 400 });
