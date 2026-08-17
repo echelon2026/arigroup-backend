@@ -45,8 +45,7 @@ export default async (request) => {
       respHeaders['cache-control'] = upstream.headers.get('cache-control');
     }
 
-    const body = await upstream.arrayBuffer();
-    return new Response(body, {
+    return new Response(upstream.body, {
       status: upstream.status,
       headers: respHeaders,
     });
