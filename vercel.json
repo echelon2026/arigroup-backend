@@ -1,18 +1,13 @@
 {
-  "services": {
-    "arigroup-api": {
-      "root": ".",
-      "buildCommand": "pip install -r requirements.txt",
-      "entrypoint": "app.py"
-    }
+  "buildCommand": "cd frontend && npm run build",
+  "outputDirectory": "frontend/build",
+  "env": {
+    "REACT_APP_API_URL": "https://arigroup-api.onrender.com"
   },
   "rewrites": [
     {
-      "source": "/(.*)",
-      "destination": {
-        "type": "service",
-        "service": "arigroup-api"
-      }
+      "source": "/api/(.*)",
+      "destination": "https://arigroup-api.onrender.com/api/$1"
     }
   ]
 }
