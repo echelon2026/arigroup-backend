@@ -7,3 +7,4 @@ pillow
 supabase
 python-multipart
 requests
+gltfio

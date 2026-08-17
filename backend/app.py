@@ -7,6 +7,7 @@ from io import BytesIO
 import uuid
 from datetime import datetime
 import json
+from model_converter import get_or_create_dual_format
 
 load_dotenv()
 
@@ -145,8 +146,8 @@ async def upload_model(
     scale: float = Form(1.0),
     file: UploadFile = File(...)
 ):
-    if not file.filename.lower().endswith(('.obj', '.gltf', '.glb')):
-        raise HTTPException(status_code=400, detail="Only OBJ, glTF, and GLB files allowed")
+    if not file.filename.lower().endswith(('.obj', '.gltf', '.glb', '.usdz')):
+        raise HTTPException(status_code=400, detail="Only OBJ, glTF, GLB, and USDZ files allowed")
 
     if restaurant_id not in restaurants_db:
         raise HTTPException(status_code=404, detail="Restaurant not found")
@@ -162,7 +163,10 @@ async def upload_model(
     with open(file_path, 'wb') as f:
         f.write(content)
 
-    # Save metadata
+    # Convert to dual-format (GLB + USDZ) for cross-platform AR
+    formats = get_or_create_dual_format(file_path, restaurant_id, model_id, UPLOAD_DIR)
+
+    # Save metadata with format info
     model_data = {
         "id": model_id,
         "restaurant_id": restaurant_id,
@@ -172,6 +176,7 @@ async def upload_model(
         "file_type": file_ext,
         "file_size": len(content),
         "scale": scale,
+        "formats": formats,
         "created_at": datetime.utcnow().isoformat()
     }
 
@@ -180,8 +185,9 @@ async def upload_model(
 
     return {
         "id": model_id,
-        "message": "Model uploaded successfully",
-        "file_path": file_path
+        "message": "Model uploaded successfully - dual-format support enabled",
+        "file_path": file_path,
+        "formats": formats
     }
 
 @app.get("/models/{restaurant_id}")
@@ -259,8 +265,16 @@ async def get_model_file(model_id: str):
         raise HTTPException(status_code=404, detail="Model not found")
 
     model = models_db[model_id]
-    file_path = model["file_path"]
-    file_type = model["file_type"].lower()
+
+    # Serve GLB by default (works on web + Android)
+    # If dual formats exist, prefer GLB for universal compatibility
+    formats = model.get("formats", {})
+    if formats.get("glb_path") and os.path.exists(formats["glb_path"]):
+        file_path = formats["glb_path"]
+        file_type = "glb"
+    else:
+        file_path = model["file_path"]
+        file_type = model["file_type"].lower()
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Model file not found")
@@ -272,7 +286,8 @@ async def get_model_file(model_id: str):
     media_types = {
         "obj": "text/plain",
         "gltf": "model/gltf+json",
-        "glb": "model/gltf-binary"
+        "glb": "model/gltf-binary",
+        "usdz": "model/vnd.usdz+zip"
     }
     media_type = media_types.get(file_type, "application/octet-stream")
     file_size = os.path.getsize(file_path)
