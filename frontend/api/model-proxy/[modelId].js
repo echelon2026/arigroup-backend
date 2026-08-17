@@ -5,7 +5,24 @@ export const config = {
 const API_URL = 'https://arigroup-api.onrender.com';
 
 export default async (request) => {
-  const { modelId } = request.query;
+  let modelId = null;
+
+  // Vercel Edge Functions: use nextUrl (Vercel's enhancement to Web API)
+  if (request.nextUrl?.pathname) {
+    const segments = request.nextUrl.pathname.split('/');
+    modelId = segments[segments.length - 1];
+  }
+
+  // Fallback: parse from request.url directly
+  if (!modelId) {
+    try {
+      const url = new URL(request.url);
+      const segments = url.pathname.split('/');
+      modelId = segments[segments.length - 1];
+    } catch (e) {
+      // continue to error below
+    }
+  }
 
   if (!modelId) {
     return new Response('Model ID required', { status: 400 });
