@@ -5,55 +5,37 @@ export const config = {
 const API_URL = 'https://arigroup-api.onrender.com';
 
 export default async (request) => {
-  let modelId;
-  try {
-    const url = new URL(request.url);
-    modelId = url.pathname.split('/').pop();
+  const { modelId } = request.query;
 
-    if (!modelId) {
-      return new Response('Model ID required', { status: 400 });
-    }
-  } catch (parseErr) {
-    console.error('URL parse error:', parseErr);
-    return new Response(`URL parse failed: ${parseErr.message}`, { status: 400 });
+  if (!modelId) {
+    return new Response('Model ID required', { status: 400 });
   }
 
   try {
     const modelUrl = `${API_URL}/model/${modelId}`;
 
-    const reqHeaders = {};
+    // Forward Range header if present (for chunked loading)
+    const headers = {};
     const range = request.headers.get('range');
     if (range) {
-      reqHeaders['range'] = range;
+      headers['range'] = range;
     }
 
     const upstream = await fetch(modelUrl, {
-      headers: reqHeaders,
+      headers,
+      // Follow redirects, don't error on non-2xx
     });
 
-    const respHeaders = {};
-    if (upstream.headers.get('content-type')) {
-      respHeaders['content-type'] = upstream.headers.get('content-type');
-    }
-    if (upstream.headers.get('content-length')) {
-      respHeaders['content-length'] = upstream.headers.get('content-length');
-    }
-    if (upstream.headers.get('accept-ranges')) {
-      respHeaders['accept-ranges'] = upstream.headers.get('accept-ranges');
-    }
-    if (upstream.headers.get('cache-control')) {
-      respHeaders['cache-control'] = upstream.headers.get('cache-control');
-    }
-
+    // Return upstream response with its headers intact
+    // This preserves Content-Type, Content-Length, Content-Range, ETag, etc.
     return new Response(upstream.body, {
       status: upstream.status,
-      headers: respHeaders,
+      headers: upstream.headers,
     });
   } catch (err) {
-    console.error(`[model-proxy] Error fetching model ${modelId}:`, err.message);
+    console.error(`[model-proxy] Error fetching model ${modelId}:`, err);
     return new Response(`Failed to fetch model: ${err.message}`, {
-      status: 500,
-      headers: { 'content-type': 'text/plain' }
+      status: 500
     });
   }
 };
