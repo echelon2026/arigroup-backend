@@ -7,6 +7,7 @@ from io import BytesIO
 import uuid
 from datetime import datetime
 import json
+from model_converter import get_or_create_dual_format
 
 load_dotenv()
 
@@ -29,6 +30,36 @@ qr_codes_db = {}
 # File storage
 UPLOAD_DIR = "/tmp/arigroup_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+MODELS_INDEX_PATH = os.path.join(UPLOAD_DIR, "models_index.json")
+
+
+def persist_models_index():
+    """Persist model metadata to disk so it can survive an in-process
+    restart as long as the underlying disk is still around (Render's free
+    tier spins the process down after ~15 min idle and loses all in-memory
+    state on wake, which was silently breaking every previously-issued QR
+    code)."""
+    try:
+        with open(MODELS_INDEX_PATH, 'w') as f:
+            json.dump(models_db, f)
+    except Exception as e:
+        print(f"Warning: failed to persist models index: {e}")
+
+
+def load_models_index():
+    """Reload model metadata on startup. Also recovers metadata-less files
+    found on disk (in case the index itself didn't survive a restart but
+    the uploaded files did)."""
+    if os.path.exists(MODELS_INDEX_PATH):
+        try:
+            with open(MODELS_INDEX_PATH, 'r') as f:
+                loaded = json.load(f)
+            for model_id, model in loaded.items():
+                if os.path.exists(model.get("file_path", "")):
+                    models_db[model_id] = model
+        except Exception as e:
+            print(f"Warning: failed to load models index: {e}")
 
 # Initialize test data
 def init_test_data():
@@ -71,6 +102,7 @@ def init_test_data():
 @app.on_event("startup")
 async def startup_event():
     init_test_data()
+    load_models_index()
 
 @app.get("/")
 def read_root():
@@ -114,8 +146,8 @@ async def upload_model(
     scale: float = Form(1.0),
     file: UploadFile = File(...)
 ):
-    if not file.filename.lower().endswith(('.obj', '.gltf', '.glb')):
-        raise HTTPException(status_code=400, detail="Only OBJ, glTF, and GLB files allowed")
+    if not file.filename.lower().endswith(('.obj', '.gltf', '.glb', '.usdz')):
+        raise HTTPException(status_code=400, detail="Only OBJ, glTF, GLB, and USDZ files allowed")
 
     if restaurant_id not in restaurants_db:
         raise HTTPException(status_code=404, detail="Restaurant not found")
@@ -131,7 +163,10 @@ async def upload_model(
     with open(file_path, 'wb') as f:
         f.write(content)
 
-    # Save metadata
+    # Convert to dual-format (GLB + USDZ) for cross-platform AR
+    formats = get_or_create_dual_format(file_path, restaurant_id, model_id, UPLOAD_DIR)
+
+    # Save metadata with format info
     model_data = {
         "id": model_id,
         "restaurant_id": restaurant_id,
@@ -141,15 +176,18 @@ async def upload_model(
         "file_type": file_ext,
         "file_size": len(content),
         "scale": scale,
+        "formats": formats,
         "created_at": datetime.utcnow().isoformat()
     }
 
     models_db[model_id] = model_data
+    persist_models_index()
 
     return {
         "id": model_id,
-        "message": "Model uploaded successfully",
-        "file_path": file_path
+        "message": "Model uploaded successfully - dual-format support enabled",
+        "file_path": file_path,
+        "formats": formats
     }
 
 @app.get("/models/{restaurant_id}")
@@ -164,8 +202,9 @@ async def generate_qr(model_id: str):
     model = models_db[model_id]
     restaurant_id = model["restaurant_id"]
 
-    # Create QR code URL using local IP (so it works from phone)
-    qr_url = f"http://10.76.194.19:3000/view/{model_id}"
+    # Create QR code URL pointing to production frontend
+    frontend_url = os.getenv("FRONTEND_URL", "https://arigroup.space")
+    qr_url = f"{frontend_url}/view/{model_id}"
 
     # Generate QR code image
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -199,20 +238,102 @@ async def generate_qr(model_id: str):
         "qr_image_url": f"data:image/png;base64,{__import__('base64').b64encode(open(qr_image_path, 'rb').read()).decode()}"
     }
 
+@app.get("/model/{model_id}/info")
+async def get_model_info(model_id: str):
+    """Lightweight JSON metadata for a model. The AR viewer needs this to
+    read the per-model `scale` that's been collected in the upload form
+    (Dashboard/AdminDashboard) since the app's inception but was never
+    actually served anywhere — the viewer only ever fetched the raw GLB
+    from /model/{model_id}, so that field had zero effect on how big the
+    model actually rendered. This is what was making uploaded models
+    (e.g. the cube) show up oversized in AR regardless of what scale was
+    set at upload time."""
+    if model_id not in models_db:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    model = models_db[model_id]
+    return {
+        "id": model["id"],
+        "name": model.get("name"),
+        "file_type": model.get("file_type"),
+        "scale": model.get("scale", 1.0),
+    }
+
 @app.get("/model/{model_id}")
 async def get_model_file(model_id: str):
     if model_id not in models_db:
         raise HTTPException(status_code=404, detail="Model not found")
 
     model = models_db[model_id]
-    file_path = model["file_path"]
+
+    # Serve GLB by default (works on web + Android)
+    # If dual formats exist, prefer GLB for universal compatibility
+    formats = model.get("formats", {})
+    if formats.get("glb_path") and os.path.exists(formats["glb_path"]):
+        file_path = formats["glb_path"]
+        file_type = "glb"
+    else:
+        file_path = model["file_path"]
+        file_type = model["file_type"].lower()
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Model file not found")
 
-    # Return the file directly
+    # Map file types to correct media types. Scene Viewer / Quick Look /
+    # model-viewer all sniff these, so using the generic
+    # application/octet-stream (as before) can cause some AR handoffs to
+    # reject the file.
+    media_types = {
+        "obj": "text/plain",
+        "gltf": "model/gltf+json",
+        "glb": "model/gltf-binary",
+        "usdz": "model/vnd.usdz+zip"
+    }
+    media_type = media_types.get(file_type, "application/octet-stream")
+    file_size = os.path.getsize(file_path)
+
+    # iOS Safari is stricter than Android/Chrome about CORS on binary
+    # model downloads: it wants the CORS headers present directly on the
+    # response for the actual GET (not just relying on the app-level
+    # CORSMiddleware) and is picky about Content-Length being explicit
+    # rather than left to chunked transfer. Spell everything out here so
+    # Safari's fetch() for the .glb doesn't get silently rejected.
+    #
+    # Starlette's FileResponse already streams the file in chunks (rather
+    # than buffering it all in memory) and, given a Range request header,
+    # already serves a proper 206 partial response — both needed so a slow
+    # connection (Render free tier + a large GLB, worse on iOS) gets bytes
+    # incrementally instead of waiting on one huge buffered response.
+    # Accept-Ranges is spelled out explicitly here (not just left to
+    # FileResponse's own default) so clients — including model-viewer's own
+    # loader and the app's independent reachability diagnostic — can see
+    # from the headers alone that range/resumable requests are supported.
     from fastapi.responses import FileResponse
-    return FileResponse(file_path, media_type="application/octet-stream")
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Range",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+        }
+    )
+
+
+@app.options("/model/{model_id}")
+async def options_model(model_id: str):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        content={"allow": ["GET", "OPTIONS"]},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Range",
+        }
+    )
 
 if __name__ == "__main__":
     import uvicorn
