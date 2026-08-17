@@ -104,6 +104,71 @@
   background: #764ba2;
 }
 
+.error-message .secondary-btn {
+  background: transparent;
+  color: #667eea;
+  margin-top: 10px;
+  margin-left: 10px;
+}
+
+.error-message .secondary-btn:hover {
+  background: rgba(102, 126, 234, 0.1);
+}
+
+.status-box-secondary {
+  margin-top: 10px;
+  max-width: 280px;
+  font-size: 12px;
+  opacity: 0.9;
+  pointer-events: auto;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  margin: 10px auto 0;
+  border: 3px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: ar-spin 0.8s linear infinite;
+}
+
+@keyframes ar-spin {
+  to { transform: rotate(360deg); }
+}
+
+.instant-ar-link {
+  pointer-events: auto;
+  margin-top: 10px;
+  color: white;
+  font-size: 12px;
+  text-decoration: underline;
+  background: rgba(0, 0, 0, 0.5);
+  padding: 8px 16px;
+  border-radius: 20px;
+}
+
+/* Exists only to occupy model-viewer's "ar-button" slot so model-viewer
+   doesn't render its own default floating AR button in its place. AR
+   launching is fully driven from app code (auto-launch / tap-anywhere /
+   manual-ar-btn), so this itself is never meant to be seen or tapped. */
+.ar-button-slot-suppressed {
+  display: none;
+}
+
+/* The floating "View in your space" / "View in AR" button has been removed
+   from the component entirely (AR now launches from any tap on the
+   full-screen view). These rules are kept only as a hard defensive net —
+   if a stale/cached JS bundle or any future markup ever re-introduces an
+   element with this class, it must never be visible. */
+.manual-ar-btn,
+[slot='ar-button'],
+model-viewer::part(default-ar-button) {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 /* Mobile optimizations */
 @media (max-width: 768px) {
   .status-box {
