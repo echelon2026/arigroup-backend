@@ -1,337 +1,47 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-// Bundling the library directly (instead of injecting a <script> tag that
-// points at a CDN at runtime) guarantees the <model-viewer> custom element
-// is registered before React ever tries to render it, and removes a whole
-// class of "worked locally, blank on the phone" bugs caused by the CDN
-// script losing the race against the first render or being blocked by a
-// carrier/network filter.
+// Bundled (not a CDN <script> tag) so the <model-viewer> custom element is
+// guaranteed to be registered before React ever renders it.
 import '@google/model-viewer';
 import '../styles/ARViewerModelViewer.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-// Render's free tier spins the API down after ~15 min idle; the first
-// request after that can take 30-60s to answer while the instance boots.
-// Without this, the viewer just looks broken ("Loading..." forever) during
-// that window, which is very likely what was happening during testing.
-const COLD_START_HINT_MS = 8000;
-const HARD_TIMEOUT_MS = 60000;
-
-// Real-world AR display cap, in meters, for the model's longest dimension.
-// glTF/GLB treats 1 unit = 1 meter, but a lot of export pipelines (and, in
-// this app's case, an upload-time "scale" field that was collected but
-// never actually applied anywhere) don't calibrate to that, so models can
-// come through many times larger than intended and blow up to room-size in
-// AR. This is a last-resort safety net applied after the per-model scale
-// below, not a replacement for exporting/uploading at a sane size.
-const MAX_AR_METERS = 0.1; // 20% of original size
-
-const isIOS =
-  typeof navigator !== 'undefined' &&
-  (/iP(hone|od|ad)/.test(navigator.userAgent) ||
-    // iPadOS 13+ reports as "MacIntel" with touch support, indistinguishable
-    // from a real Mac unless you check for touch points.
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
-
-const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
-
-// Metadata fetch is non-blocking for both the 3D view and AR launch, but it
-// was previously allowed to hang forever on a stalled connection. Give it
-// its own short budget so a slow/dead metadata endpoint can never leave a
-// silent, uncancelled request in flight.
-const METADATA_FETCH_TIMEOUT_MS = 5000;
-
 function ARViewerModelViewer() {
   const { modelId } = useParams();
   const modelViewerRef = useRef(null);
-  const metaScaleRef = useRef(1);
-  const arLaunchedRef = useRef(false);
-  const tapListenerRef = useRef(null);
-  // iOS Quick Look, when there's no pre-built ios-src USDZ, generates one
-  // on the fly via model-viewer's prepareUSDZ() — which is async. Calling
-  // that *inside* activateAR() (model-viewer's own default behavior) means
-  // the eventual anchor.click() happens after an `await`, outside the
-  // synchronous scope of whatever user gesture triggered it. WebKit only
-  // honors AR Quick Look handoffs triggered synchronously from a trusted
-  // gesture, so that await is what was silently killing auto-launch on
-  // iPhone: canActivateAR was true, the tap fired, but by the time the
-  // conversion finished, Safari no longer considered it a valid user
-  // action and dropped the handoff. Fix: run the (slow) conversion eagerly
-  // the moment the model finishes loading — well before any tap — and cache
-  // the resulting blob URL, so the actual tap only has to do a synchronous
-  // anchor.click() with no async work left in the critical path.
-  const usdzBlobUrlRef = useRef(null);
-  const usdzPreparingRef = useRef(false);
-  const usdzFailedRef = useRef(false);
+  const arTriedRef = useRef(false);
 
-  const [status, setStatus] = useState('Loading 3D model...');
-  const [modelError, setModelError] = useState(false);
-  const [modelReady, setModelReady] = useState(false);
-  const [arSupported, setArSupported] = useState(null); // null = unknown yet
-  const [coldStartHint, setColdStartHint] = useState(false);
-  const [instantArAvailable, setInstantArAvailable] = useState(false);
+  const [status, setStatus] = useState('loading'); // loading | ready | error
+  const [errorMessage, setErrorMessage] = useState('');
 
   const modelSrc = `${API_URL}/model/${modelId}`;
 
-  // Fetch the per-model scale that was set at upload time. Stored in a ref
-  // (not state) so it never becomes a React-controlled prop on
-  // <model-viewer> — applying it imperatively in handleLoad, alongside the
-  // AR-size cap below, means a late-arriving fetch can never stomp a scale
-  // value handleLoad already computed and set directly on the element.
-  // This request is entirely independent of model loading / AR launch —
-  // it is never awaited by either, only best-effort applied if/when it
-  // resolves in time.
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), METADATA_FETCH_TIMEOUT_MS);
+  // Fires once the GLB has downloaded and parsed successfully.
+  const handleLoad = useCallback(() => {
+    setStatus('ready');
 
-    console.log(`[AR] Fetching model metadata: /model/${modelId}/info`);
-    fetch(`${API_URL}/model/${modelId}/info`, { signal: controller.signal })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!cancelled && data && Number.isFinite(data.scale) && data.scale > 0) {
-          metaScaleRef.current = data.scale;
-          console.log(`[AR] Metadata loaded, scale=${data.scale}`);
-        }
-      })
-      .catch((err) => {
-        // Non-fatal — falls back to the default scale of 1 plus whatever
-        // the AR-size cap below decides. Logged (not silently swallowed)
-        // so a slow/dead metadata endpoint is visible in the console
-        // instead of just manifesting as "model looks the wrong size".
-        if (err?.name === 'AbortError') {
-          console.warn(`[AR] Metadata fetch timed out after ${METADATA_FETCH_TIMEOUT_MS}ms — continuing without it`);
-        } else {
-          console.warn('[AR] Metadata fetch failed — continuing without it:', err);
-        }
-      })
-      .finally(() => clearTimeout(timeoutId));
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-      clearTimeout(timeoutId);
-    };
-  }, [modelId]);
-
-  const disarmTapListener = useCallback(() => {
-    if (tapListenerRef.current) {
-      document.removeEventListener('pointerdown', tapListenerRef.current);
-      tapListenerRef.current = null;
-    }
-  }, []);
-
-  // Applies the uploaded model's scale, then measures the model's real
-  // on-screen size (in meters, as AR will render it) and shrinks it further
-  // if it's still bigger than a sane tabletop/handheld object — this is
-  // what actually fixes "the cube loads too big in AR" regardless of what
-  // scale (if any) was set when the model was uploaded.
-  const applyArSafeScale = useCallback((el) => {
-    if (!el) return;
-    const base = metaScaleRef.current > 0 ? metaScaleRef.current : 1;
-    el.setAttribute('scale', `${base} ${base} ${base}`);
-    try {
-      const dims = el.getDimensions();
-      const maxDim = Math.max(dims.x, dims.y, dims.z);
-      if (Number.isFinite(maxDim) && maxDim > MAX_AR_METERS) {
-        const corrected = base * (MAX_AR_METERS / maxDim);
-        el.setAttribute('scale', `${corrected} ${corrected} ${corrected}`);
-      }
-    } catch (e) {
-      console.warn('AR auto-size check failed, using uploaded scale as-is:', e);
-    }
-  }, []);
-
-  // Kick off Quick Look's USDZ conversion as early as possible — right when
-  // the model finishes loading, not when the user taps. This is the fix for
-  // "doesn't automatically enter AR mode" on iPhone: by the time the user's
-  // first tap arrives, the (slow) conversion is already done, so the tap
-  // handler below only has to do a synchronous anchor.click(), which is what
-  // Safari actually requires for Quick Look to accept the handoff.
-  const prepareIOSQuickLook = useCallback(() => {
     const el = modelViewerRef.current;
-    if (!el || !isIOS || usdzPreparingRef.current || usdzBlobUrlRef.current) return;
-    usdzPreparingRef.current = true;
-    usdzFailedRef.current = false;
-    console.log('[AR] iOS detected — pre-generating USDZ for Quick Look ahead of any tap...');
-    el.prepareUSDZ()
-      .then((url) => {
-        if (!url) {
-          throw new Error('prepareUSDZ() returned empty URL (model not ready?)');
-        }
-        usdzBlobUrlRef.current = url;
-        console.log('[AR] USDZ ready — AR launch is now instant on next tap:', url);
-      })
-      .catch((err) => {
-        usdzFailedRef.current = true;
-        console.error('[AR] USDZ pre-generation failed:', err);
-        setStatus('❌ Could not prepare AR for this device. Tap to retry, or rotate the model above.');
-      })
-      .finally(() => {
-        usdzPreparingRef.current = false;
-      });
-  }, []);
+    if (!el || arTriedRef.current) return;
+    arTriedRef.current = true;
 
-  // Android: hand off to Scene Viewer directly with mode=ar_only and
-  // resizable=false instead of going through model-viewer's default
-  // activateAR() (which requests mode=ar_preferred). The default mode is
-  // what puts up Scene Viewer's "View as object" AR/3D toggle and its
-  // pinch-to-resize handle — both reported as unwanted extra UI. ar_only
-  // skips straight into AR with no toggle, and resizable=false removes the
-  // resize control.
-  //
-  // iOS: bypass model-viewer's own activateAR()/Quick Look path entirely.
-  // Its internal handler re-runs the (slow, async) USDZ conversion on every
-  // call with no caching, which is what breaks the user-gesture requirement
-  // — see prepareIOSQuickLook above. Instead we do exactly what Apple's own
-  // docs describe for a manual AR Quick Look launch (an `<a rel="ar">` with
-  // an <img> child, clicked synchronously) using the blob URL we already
-  // generated ahead of time.
-  const launchAR = useCallback(() => {
-    const el = modelViewerRef.current;
-    if (!el || arLaunchedRef.current) return;
-
-    if (isIOS) {
-      if (!usdzBlobUrlRef.current) {
-        // Not ready yet (rare — conversion is kicked off as soon as the
-        // model loads, well before a human can realistically tap). Don't
-        // consume the gesture on a launch that can't succeed; leave the
-        // tap listener armed so the very next tap retries. Nudge the
-        // conversion in case it hasn't started/errored for some reason.
-        console.warn('[AR] Tap received but USDZ still not ready — will retry on next tap');
-        if (usdzFailedRef.current) prepareIOSQuickLook();
-        return;
-      }
-      arLaunchedRef.current = true;
-      disarmTapListener();
-      console.log('[AR] Launching Quick Look directly (pre-generated USDZ, no async work in the tap handler)');
-      setStatus('📱 Opening AR — look at your surroundings and tap to place');
-      const anchor = document.createElement('a');
-      anchor.setAttribute('rel', 'ar');
-      anchor.href = usdzBlobUrlRef.current;
-      anchor.appendChild(document.createElement('img'));
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      // Revoke after Quick Look has had time to fetch the blob (WebKit
-      // does this as part of the app-switch, essentially immediately) —
-      // delayed rather than immediate so we're not racing that fetch.
-      const blobToRevoke = usdzBlobUrlRef.current;
-      setTimeout(() => URL.revokeObjectURL(blobToRevoke), 5000);
-      usdzBlobUrlRef.current = null;
-      return;
-    }
-
-    arLaunchedRef.current = true;
-    disarmTapListener();
-
-    if (isAndroid) {
-      const fallback = window.location.href;
-      const intentUrl =
-        `intent://arvr.google.com/scene-viewer/1.0?file=${encodeURIComponent(modelSrc)}` +
-        `&mode=ar_only&resizable=false#Intent;scheme=https;package=com.google.ar.core;` +
-        `action=android.intent.action.VIEW;S.browser_fallback_url=${encodeURIComponent(fallback)};end;`;
-      window.location.href = intentUrl;
-    } else {
+    // Best-effort auto-launch straight into AR. model-viewer picks the
+    // right native handoff itself (Scene Viewer on Android, Quick Look on
+    // iOS, in-page WebXR elsewhere) based on the ar-modes list below, and
+    // no-ops safely if the device/browser doesn't support any of them —
+    // the model still renders in the normal 3D view either way, and the
+    // built-in "View in AR" button (rendered automatically by the `ar`
+    // attribute whenever el.canActivateAR is true) stays available so the
+    // user can trigger it manually if the auto-attempt doesn't go through.
+    if (el.canActivateAR) {
       el.activateAR();
     }
-  }, [modelSrc, disarmTapListener, prepareIOSQuickLook]);
-
-  const handleLoad = useCallback(() => {
-    console.log('[AR] Model loaded');
-    setModelReady(true);
-    setModelError(false);
-    setColdStartHint(false);
-
-    applyArSafeScale(modelViewerRef.current);
-
-    // canActivateAR reflects real, per-device/browser support (ARCore
-    // Scene Viewer / ARKit Quick Look / in-page WebXR) and is only
-    // accurate once the model itself has loaded.
-    const canAR = !!modelViewerRef.current?.canActivateAR;
-    setArSupported(canAR);
-    console.log(`[AR] canActivateAR=${canAR} isIOS=${isIOS} isAndroid=${isAndroid}`);
-    setStatus(canAR ? '📱 Launching AR...' : '✓ Model loaded');
-
-    if (canAR) {
-      // On iOS, start generating the USDZ Quick Look needs right now,
-      // before any tap — see prepareIOSQuickLook for why this timing is
-      // what actually makes auto-launch work.
-      if (isIOS) {
-        prepareIOSQuickLook();
-      }
-
-      // Arm a first-tap-anywhere fallback on every platform. iOS in
-      // particular requires AR to be triggered from inside a genuine user
-      // gesture — WebKit will silently drop, or half-launch, an AR handoff
-      // that comes from a setTimeout, and a half-launch is exactly what
-      // produces Quick Look's "object could not be opened" error. Since
-      // this is a full-screen AR view, the user's very first touch
-      // (whether meant to tap anything or just look at the model) fires
-      // this immediately, so it reads as automatic without ever needing a
-      // visible "View in AR" button. It also safety-nets Android/desktop
-      // in case the eager auto-launch below doesn't fire.
-      const armedListener = (event) => {
-        if (event.target?.closest?.('.exit-btn')) return;
-        launchAR();
-      };
-      tapListenerRef.current = armedListener;
-      document.addEventListener('pointerdown', armedListener);
-
-      // Eager auto-launch: safe on Android/desktop, where the Scene
-      // Viewer/WebXR handoff isn't gated behind a trusted user gesture the
-      // way iOS Quick Look is. Skipped on iOS — see armedListener above and
-      // prepareIOSQuickLook; a real trusted tap is a hard platform
-      // requirement there, not a choice this code makes.
-      if (!isIOS) {
-        setTimeout(() => {
-          launchAR();
-        }, 500);
-      }
-    }
-  }, [applyArSafeScale, launchAR, prepareIOSQuickLook]);
+  }, []);
 
   const handleError = useCallback((event) => {
-    const detail = event?.detail;
-    console.error('[AR] model-viewer load error:', detail, event);
-    setModelError(true);
-    const reason = detail?.type ? ` (${detail.type})` : '';
-    setStatus(`❌ Could not load this model${reason}. It may have expired, or the server is waking up — try again in a moment.`);
+    setStatus('error');
+    setErrorMessage(event?.detail?.type || 'Failed to load model');
   }, []);
-
-  const handleProgress = useCallback((event) => {
-    const pct = Math.round((event?.detail?.totalProgress || 0) * 100);
-    if (pct === 0) {
-      console.log('[AR] Model fetch started');
-      setStatus('Connecting to server…');
-    } else if (pct < 100) {
-      setStatus(`Loading 3D model… ${pct}%`);
-    } else {
-      console.log('[AR] Model fetch complete, parsing…');
-    }
-  }, []);
-
-  const handleArStatus = useCallback((event) => {
-    const arStatus = event?.detail?.status;
-    console.log(`[AR] ar-status: ${arStatus}`);
-    if (arStatus === 'session-started') {
-      arLaunchedRef.current = true;
-      disarmTapListener();
-      setStatus('📱 Point your camera at a flat surface, then tap to place');
-    } else if (arStatus === 'object-placed') {
-      setStatus('✓ Placed! Move around to view it from any angle');
-    } else if (arStatus === 'failed') {
-      // Allow another attempt (the tap-anywhere listener stays/gets
-      // re-armed) rather than staying permanently latched as "launched".
-      arLaunchedRef.current = false;
-      console.error('[AR] AR session failed to start');
-      setStatus('❌ AR session failed to start — tap anywhere to try again');
-    } else if (arStatus === 'not-presenting') {
-      setStatus(modelReady ? '✓ Ready — tap anywhere to view in AR' : 'Loading 3D model...');
-    }
-  }, [modelReady, disarmTapListener]);
 
   useEffect(() => {
     const el = modelViewerRef.current;
@@ -339,165 +49,64 @@ function ARViewerModelViewer() {
 
     el.addEventListener('load', handleLoad);
     el.addEventListener('error', handleError);
-    el.addEventListener('progress', handleProgress);
-    el.addEventListener('ar-status', handleArStatus);
 
     return () => {
       el.removeEventListener('load', handleLoad);
       el.removeEventListener('error', handleError);
-      el.removeEventListener('progress', handleProgress);
-      el.removeEventListener('ar-status', handleArStatus);
-      disarmTapListener();
     };
-  }, [handleLoad, handleError, handleProgress, handleArStatus, disarmTapListener]);
-
-  // Cold-start / hard-timeout watchdog, independent of model-viewer's own
-  // events (those never fire at all if the fetch just hangs).
-  useEffect(() => {
-    const hintTimer = setTimeout(() => {
-      if (!modelReady && !modelError) {
-        setColdStartHint(true);
-        setStatus('⏳ Waking up the server… first load can take up to a minute');
-      }
-    }, COLD_START_HINT_MS);
-
-    const hardTimer = setTimeout(() => {
-      if (!modelReady && !modelError) {
-        setModelError(true);
-        setStatus('❌ Timed out loading the model. Please check your connection and try again.');
-      }
-    }, HARD_TIMEOUT_MS);
-
-    return () => {
-      clearTimeout(hintTimer);
-      clearTimeout(hardTimer);
-    };
-  }, [modelReady, modelError]);
-
-  // Real, tap-free auto-placement is only possible via a raw in-page WebXR
-  // hit-test session (Chrome on ARCore-capable Android). Scene Viewer and
-  // Quick Look are native OS hand-offs that always require one placement
-  // tap by platform design — no web API can skip that step there. We
-  // detect the one case where a truly automatic placement flow is
-  // possible and offer it as an extra option rather than promising
-  // something the platform won't allow.
-  useEffect(() => {
-    let cancelled = false;
-    if (navigator.xr?.isSessionSupported) {
-      navigator.xr.isSessionSupported('immersive-ar')
-        .then((supported) => {
-          if (!cancelled) setInstantArAvailable(supported);
-        })
-        .catch(() => {
-          if (!cancelled) setInstantArAvailable(false);
-        });
-    }
-    return () => { cancelled = true; };
-  }, []);
-
-  // Release the pre-generated USDZ blob if the user navigates away before
-  // ever tapping (otherwise it leaks for the life of the tab).
-  useEffect(() => {
-    return () => {
-      if (usdzBlobUrlRef.current) {
-        URL.revokeObjectURL(usdzBlobUrlRef.current);
-        usdzBlobUrlRef.current = null;
-      }
-    };
-  }, []);
+  }, [handleLoad, handleError]);
 
   const retry = () => {
-    setModelError(false);
-    setModelReady(false);
-    setColdStartHint(false);
-    setStatus('Loading 3D model...');
-    arLaunchedRef.current = false;
-    usdzBlobUrlRef.current = null;
-    usdzFailedRef.current = false;
-    disarmTapListener();
+    arTriedRef.current = false;
+    setErrorMessage('');
+    setStatus('loading');
     const el = modelViewerRef.current;
     if (el) {
-      // Force a fresh fetch rather than relying on a cached failure.
       const src = el.src;
       el.src = '';
-      // eslint-disable-next-line no-unused-expressions
-      el.offsetHeight;
       el.src = src;
     }
   };
 
-  return (
-    <div className="ar-viewer-mv">
-      {!modelError ? (
-        <>
-          <model-viewer
-            ref={modelViewerRef}
-            src={modelSrc}
-            alt="3D Model"
-            ar
-            ar-modes="scene-viewer webxr quick-look"
-            ar-placement="floor"
-            ar-scale="fixed"
-            crossorigin="anonymous"
-            camera-controls
-            touch-action="pan-y"
-            auto-rotate
-            shadow-intensity="1"
-            environment-image="neutral"
-            loading="eager"
-            reveal="auto"
-            class="model-viewer-element"
-          >
-            {/* model-viewer renders its own floating default AR button
-                (one more piece of unwanted UI) unless something is slotted
-                into ar-button. There is intentionally NO visible AR button
-                anywhere in this component — AR launching is entirely
-                driven by our own code (eager auto-launch on Android/desktop,
-                pre-generated-USDZ tap-anywhere on iOS). This stays
-                empty/invisible; it only exists to suppress model-viewer's
-                default button. */}
-            <button slot="ar-button" className="ar-button-slot-suppressed" aria-hidden="true" tabIndex={-1} />
-          </model-viewer>
-
-          <div className="ar-status-overlay">
-            <div className="status-box">
-              <p>{status}</p>
-              {coldStartHint && !modelError && (
-                <div className="spinner" aria-label="loading" />
-              )}
-            </div>
-
-            {modelReady && arSupported === false && (
-              <div className="status-box status-box-secondary">
-                <p>AR isn't supported by this browser/device. You can still rotate and pinch-to-zoom the 3D model above.</p>
-              </div>
-            )}
-
-            {modelReady && arSupported && instantArAvailable && (
-              <a href={`/view-webxr/${modelId}`} className="instant-ar-link">
-                Try instant auto-placing AR (experimental)
-              </a>
-            )}
-          </div>
-
-          <button
-            className="exit-btn"
-            onClick={() => { window.location.href = '/'; }}
-          >
-            ✕ Exit
-          </button>
-        </>
-      ) : (
+  if (status === 'error') {
+    return (
+      <div className="ar-viewer-mv">
         <div className="error-screen">
           <div className="error-message">
-            <p>{status}</p>
+            <p>Could not load this model.</p>
+            {errorMessage && <p className="error-detail">{errorMessage}</p>}
             <button onClick={retry}>Try Again</button>
-            <button onClick={() => window.location.href = '/'} className="secondary-btn">
-              Return to Dashboard
-            </button>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ar-viewer-mv">
+      <model-viewer
+        ref={modelViewerRef}
+        src={modelSrc}
+        alt="3D model"
+        ar
+        ar-modes="scene-viewer quick-look webxr"
+        camera-controls
+        auto-rotate
+        shadow-intensity="1"
+        environment-image="neutral"
+        class="model-viewer-element"
+      />
+
+      {status === 'loading' && (
+        <div className="loading-overlay">
+          <div className="spinner" aria-label="loading" />
+          <p>Loading 3D model...</p>
+        </div>
       )}
+
+      <button className="exit-btn" onClick={() => { window.location.href = '/'; }}>
+        ✕ Exit
+      </button>
     </div>
   );
 }
