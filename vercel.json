@@ -1,6 +1,7 @@
 {
   "outputDirectory": "frontend/build",
   "framework": "create-react-app",
+  "buildCommand": "cd frontend && npm install && npm run build",
   "env": {
     "REACT_APP_API_URL": "https://arigroup-api.onrender.com"
   }
