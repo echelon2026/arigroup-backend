@@ -15,28 +15,39 @@ export default async (request) => {
   try {
     const modelUrl = `${API_URL}/model/${modelId}`;
 
-    // Forward Range header if present (for chunked loading)
-    const headers = {};
+    const reqHeaders = {};
     const range = request.headers.get('range');
     if (range) {
-      headers['range'] = range;
+      reqHeaders['range'] = range;
     }
 
     const upstream = await fetch(modelUrl, {
-      headers,
-      // Follow redirects, don't error on non-2xx
+      headers: reqHeaders,
     });
 
-    // Return upstream response with its headers intact
-    // This preserves Content-Type, Content-Length, Content-Range, ETag, etc.
+    const respHeaders = {};
+    if (upstream.headers.get('content-type')) {
+      respHeaders['content-type'] = upstream.headers.get('content-type');
+    }
+    if (upstream.headers.get('content-length')) {
+      respHeaders['content-length'] = upstream.headers.get('content-length');
+    }
+    if (upstream.headers.get('accept-ranges')) {
+      respHeaders['accept-ranges'] = upstream.headers.get('accept-ranges');
+    }
+    if (upstream.headers.get('cache-control')) {
+      respHeaders['cache-control'] = upstream.headers.get('cache-control');
+    }
+
     return new Response(upstream.body, {
       status: upstream.status,
-      headers: upstream.headers,
+      headers: respHeaders,
     });
   } catch (err) {
-    console.error(`[model-proxy] Error fetching model ${modelId}:`, err);
+    console.error(`[model-proxy] Error fetching model ${modelId}:`, err.message);
     return new Response(`Failed to fetch model: ${err.message}`, {
-      status: 500
+      status: 500,
+      headers: { 'content-type': 'text/plain' }
     });
   }
 };
