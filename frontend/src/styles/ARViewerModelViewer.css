@@ -109,6 +109,140 @@
   background: #764ba2;
 }
 
+/* Debug Panel Styles */
+.debug-toggle {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(100, 200, 255, 0.8);
+  border: none;
+  color: white;
+  font-size: 20px;
+  cursor: pointer;
+  z-index: 90;
+  transition: background 0.3s;
+}
+
+.debug-toggle:hover {
+  background: rgba(100, 200, 255, 1);
+}
+
+.debug-panel {
+  position: absolute;
+  bottom: 70px;
+  right: 20px;
+  width: 320px;
+  max-height: 60vh;
+  background: rgba(30, 30, 30, 0.95);
+  border: 1px solid #444;
+  border-radius: 8px;
+  color: #fff;
+  font-family: monospace;
+  font-size: 11px;
+  z-index: 95;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  overflow-y: auto;
+}
+
+.debug-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.5);
+  border-bottom: 1px solid #444;
+  position: sticky;
+  top: 0;
+}
+
+.debug-header h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.debug-header button {
+  background: none;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.debug-content {
+  padding: 8px;
+}
+
+.debug-item {
+  margin-bottom: 8px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  border-left: 2px solid #667eea;
+}
+
+.debug-item strong {
+  display: block;
+  color: #64c8ff;
+  margin-bottom: 2px;
+}
+
+.debug-item code {
+  display: block;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 4px;
+  border-radius: 2px;
+  word-break: break-all;
+  color: #90ee90;
+}
+
+.debug-item span {
+  display: block;
+  padding: 2px 4px;
+}
+
+.status-loading {
+  color: #ffa500;
+}
+
+.status-ready {
+  color: #00ff00;
+}
+
+.status-error {
+  color: #ff4444;
+}
+
+.success {
+  color: #00ff00 !important;
+}
+
+.error {
+  color: #ff4444 !important;
+}
+
+.debug-item.errors {
+  border-left-color: #ff4444;
+}
+
+.error-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.error-entry {
+  background: rgba(255, 0, 0, 0.1);
+  border: 1px solid #ff4444;
+  padding: 4px;
+  border-radius: 2px;
+  color: #ff8888;
+}
+
 @media (max-width: 768px) {
   .exit-btn {
     padding: 8px 16px;
@@ -117,5 +251,11 @@
 
   .error-message {
     margin: 20px;
+  }
+
+  .debug-panel {
+    width: 280px;
+    bottom: 70px;
+    right: 10px;
   }
 }
