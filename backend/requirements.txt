@@ -8,3 +8,4 @@ supabase
 python-multipart
 requests
 gltfio
+boto3

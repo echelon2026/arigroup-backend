@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 import os
 from dotenv import load_dotenv
 import qrcode
@@ -7,7 +8,9 @@ from io import BytesIO
 import uuid
 from datetime import datetime
 import json
+import tempfile
 from model_converter import get_or_create_dual_format
+from r2_storage import upload_model_to_r2, R2_AVAILABLE
 
 load_dotenv()
 
@@ -155,40 +158,63 @@ async def upload_model(
     model_id = str(uuid.uuid4())
     file_ext = file.filename.split('.')[-1].lower()
 
-    # Save file locally
-    os.makedirs(f"{UPLOAD_DIR}/{restaurant_id}", exist_ok=True)
-    file_path = f"{UPLOAD_DIR}/{restaurant_id}/{model_id}.{file_ext}"
+    # Save file temporarily for processing
+    temp_dir = tempfile.mkdtemp(prefix="arigroup_")
+    temp_file_path = os.path.join(temp_dir, f"{model_id}.{file_ext}")
 
     content = await file.read()
-    with open(file_path, 'wb') as f:
+    with open(temp_file_path, 'wb') as f:
         f.write(content)
 
-    # Convert to dual-format (GLB + USDZ) for cross-platform AR
-    formats = get_or_create_dual_format(file_path, restaurant_id, model_id, UPLOAD_DIR)
+    try:
+        # Convert to dual-format (GLB + USDZ) for cross-platform AR
+        formats = get_or_create_dual_format(temp_file_path, restaurant_id, model_id, temp_dir)
 
-    # Save metadata with format info
-    model_data = {
-        "id": model_id,
-        "restaurant_id": restaurant_id,
-        "name": name,
-        "description": description or "",
-        "file_path": file_path,
-        "file_type": file_ext,
-        "file_size": len(content),
-        "scale": scale,
-        "formats": formats,
-        "created_at": datetime.utcnow().isoformat()
-    }
+        # Upload to R2 or fall back to local storage
+        if R2_AVAILABLE:
+            try:
+                primary_file = formats.get("glb_path") or temp_file_path
+                primary_ext = os.path.splitext(primary_file)[1].lstrip('.')
+                file_url = upload_model_to_r2(primary_file, restaurant_id, model_id, primary_ext)
+                storage_type = "Cloudflare R2 (persistent CDN)"
+            except Exception as e:
+                print(f"⚠️  R2 upload failed: {e}, falling back to local storage")
+                file_url = temp_file_path
+                storage_type = "temporary local storage"
+        else:
+            # Fall back to local temp storage if R2 not configured
+            file_url = temp_file_path
+            storage_type = "temporary local storage (R2 not configured)"
 
-    models_db[model_id] = model_data
-    persist_models_index()
+        # Save metadata
+        model_data = {
+            "id": model_id,
+            "restaurant_id": restaurant_id,
+            "name": name,
+            "description": description or "",
+            "file_path": file_url,
+            "file_type": file_ext,
+            "file_size": len(content),
+            "scale": scale,
+            "formats": formats,
+            "created_at": datetime.utcnow().isoformat()
+        }
 
-    return {
-        "id": model_id,
-        "message": "Model uploaded successfully - dual-format support enabled",
-        "file_path": file_path,
-        "formats": formats
-    }
+        models_db[model_id] = model_data
+        persist_models_index()
+
+        return {
+            "id": model_id,
+            "message": f"Model uploaded successfully to {storage_type}",
+            "file_url": file_url,
+            "formats": formats,
+            "storage": storage_type
+        }
+    finally:
+        # Clean up temp directory
+        import shutil
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 @app.get("/models/{restaurant_id}")
 async def list_models(restaurant_id: str):
@@ -265,50 +291,27 @@ async def get_model_file(model_id: str):
         raise HTTPException(status_code=404, detail="Model not found")
 
     model = models_db[model_id]
+    file_path = model["file_path"]
 
-    # Serve GLB by default (works on web + Android)
-    # If dual formats exist, prefer GLB for universal compatibility
-    formats = model.get("formats", {})
-    if formats.get("glb_path") and os.path.exists(formats["glb_path"]):
-        file_path = formats["glb_path"]
-        file_type = "glb"
-    else:
-        file_path = model["file_path"]
-        file_type = model["file_type"].lower()
+    # If it's an R2 URL (Cloudflare), redirect to it for CDN benefits
+    if file_path.startswith("https://"):
+        return RedirectResponse(url=file_path, status_code=307)
 
+    # Otherwise serve from local disk (fallback)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Model file not found")
 
-    # Map file types to correct media types. Scene Viewer / Quick Look /
-    # model-viewer all sniff these, so using the generic
-    # application/octet-stream (as before) can cause some AR handoffs to
-    # reject the file.
+    from fastapi.responses import FileResponse
     media_types = {
         "obj": "text/plain",
         "gltf": "model/gltf+json",
         "glb": "model/gltf-binary",
         "usdz": "model/vnd.usdz+zip"
     }
+    file_type = model.get("file_type", "glb").lower()
     media_type = media_types.get(file_type, "application/octet-stream")
     file_size = os.path.getsize(file_path)
 
-    # iOS Safari is stricter than Android/Chrome about CORS on binary
-    # model downloads: it wants the CORS headers present directly on the
-    # response for the actual GET (not just relying on the app-level
-    # CORSMiddleware) and is picky about Content-Length being explicit
-    # rather than left to chunked transfer. Spell everything out here so
-    # Safari's fetch() for the .glb doesn't get silently rejected.
-    #
-    # Starlette's FileResponse already streams the file in chunks (rather
-    # than buffering it all in memory) and, given a Range request header,
-    # already serves a proper 206 partial response — both needed so a slow
-    # connection (Render free tier + a large GLB, worse on iOS) gets bytes
-    # incrementally instead of waiting on one huge buffered response.
-    # Accept-Ranges is spelled out explicitly here (not just left to
-    # FileResponse's own default) so clients — including model-viewer's own
-    # loader and the app's independent reachability diagnostic — can see
-    # from the headers alone that range/resumable requests are supported.
-    from fastapi.responses import FileResponse
     return FileResponse(
         file_path,
         media_type=media_type,
