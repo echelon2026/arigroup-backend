@@ -7,5 +7,5 @@ pillow
 supabase
 python-multipart
 requests
-gltfio
+pygltflib
 boto3
