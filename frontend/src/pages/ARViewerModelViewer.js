@@ -14,21 +14,53 @@ function ARViewerModelViewer() {
 
   const [status, setStatus] = useState('loading'); // loading | ready | error
   const [errorMessage, setErrorMessage] = useState('');
+  const [scale, setScale] = useState(1.0);
   const [debugInfo, setDebugInfo] = useState({
     url: '',
     fetching: false,
     fileSize: null,
     loadTime: null,
     corsHeaders: null,
+    scale: 1.0,
     errors: []
   });
   const [showDebug, setShowDebug] = useState(false);
 
   const modelSrc = `${API_URL}/model/${modelId}`;
 
+  // Fetch model metadata (scale, info)
+  useEffect(() => {
+    const fetchModelMetadata = async () => {
+      const infoUrl = `${API_URL}/model/${modelId}/info`;
+      try {
+        const response = await fetch(infoUrl);
+        if (response.ok) {
+          const data = await response.json();
+          setScale(data.scale || 1.0);
+          setDebugInfo(prev => ({
+            ...prev,
+            scale: data.scale || 1.0
+          }));
+        } else {
+          setDebugInfo(prev => ({
+            ...prev,
+            errors: [...prev.errors, `Failed to fetch model info: HTTP ${response.status}`]
+          }));
+        }
+      } catch (error) {
+        setDebugInfo(prev => ({
+          ...prev,
+          errors: [...prev.errors, `Model info fetch error: ${error.message}`]
+        }));
+      }
+    };
+
+    fetchModelMetadata();
+  }, [modelId]);
+
   // Monitor fetch for debugging
   useEffect(() => {
-    const fetchModelInfo = async () => {
+    const fetchModelDebugInfo = async () => {
       setDebugInfo(prev => ({
         ...prev,
         url: modelSrc,
@@ -68,7 +100,7 @@ function ARViewerModelViewer() {
       }
     };
 
-    fetchModelInfo();
+    fetchModelDebugInfo();
   }, [modelSrc]);
 
   // Fires once the GLB has downloaded and parsed successfully.
@@ -145,6 +177,7 @@ function ARViewerModelViewer() {
         auto-rotate
         shadow-intensity="1"
         environment-image="neutral"
+        scale={`${scale} ${scale} ${scale}`}
         class="model-viewer-element"
       />
 
@@ -184,6 +217,12 @@ function ARViewerModelViewer() {
               <strong>Status:</strong>
               <span className={`status-${status}`}>{status}</span>
             </div>
+            {debugInfo.scale && (
+              <div className="debug-item">
+                <strong>Scale:</strong>
+                <span>{debugInfo.scale.toFixed(2)}x</span>
+              </div>
+            )}
             {debugInfo.fileSize && (
               <div className="debug-item">
                 <strong>File Size:</strong>

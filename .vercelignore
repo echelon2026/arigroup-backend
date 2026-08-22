@@ -1,0 +1,9 @@
+requirements.txt
+app.py
+model_converter.py
+r2_storage.py
+*.pyc
+__pycache__
+.env
+.env.local
+.env.*.local
