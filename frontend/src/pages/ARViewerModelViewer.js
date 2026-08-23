@@ -26,7 +26,10 @@ function ARViewerModelViewer() {
   });
   const [showDebug, setShowDebug] = useState(false);
 
-  const modelSrc = `${API_URL}/model/${modelId}`;
+  // Handle both model IDs and full URLs
+  const modelSrc = modelId.startsWith('http')
+    ? modelId
+    : `${API_URL}/model/${modelId}`;
 
   // Fetch model metadata (scale, info)
   useEffect(() => {
