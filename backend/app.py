@@ -264,6 +264,25 @@ async def generate_qr(model_id: str):
         "qr_image_url": f"data:image/png;base64,{__import__('base64').b64encode(open(qr_image_path, 'rb').read()).decode()}"
     }
 
+async def download_from_r2(r2_url: str):
+    """Download file from R2 with authentication"""
+    from r2_storage import r2_client
+    if not r2_client:
+        raise RuntimeError("R2 not configured")
+
+    # Parse R2 URL to get bucket and key
+    # URL format: https://{account}.r2.cloudflarestorage.com/{bucket}/{key}
+    parts = r2_url.replace("https://", "").split("/", 1)
+    if len(parts) != 2:
+        raise ValueError("Invalid R2 URL")
+
+    key = parts[1]
+    bucket = os.getenv("CLOUDFLARE_R2_BUCKET", "arigroup-models")
+
+    # Download from R2
+    response = r2_client.get_object(Bucket=bucket, Key=key)
+    return response["Body"].read()
+
 @app.get("/model/{model_id}/info")
 async def get_model_info(model_id: str):
     """Lightweight JSON metadata for a model. The AR viewer needs this to
@@ -293,7 +312,30 @@ async def get_model_file(model_id: str):
     model = models_db[model_id]
     file_path = model["file_path"]
 
-    # If it's an R2 URL (Cloudflare), redirect to it for CDN benefits
+    # If it's an R2 URL, fetch with authentication and serve
+    if file_path.startswith("https://") and "r2.cloudflarestorage.com" in file_path:
+        from fastapi.responses import StreamingResponse
+        try:
+            # Download from R2 with authentication
+            response = await download_from_r2(file_path)
+            media_types = {
+                "obj": "text/plain",
+                "gltf": "model/gltf+json",
+                "glb": "model/gltf-binary",
+                "usdz": "model/vnd.usdz+zip"
+            }
+            file_type = model.get("file_type", "glb").lower()
+            media_type = media_types.get(file_type, "application/octet-stream")
+
+            return StreamingResponse(
+                iter([response]),
+                media_type=media_type,
+                headers={"Content-Disposition": f"inline; filename={model_id}.{file_type}"}
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch from R2: {str(e)}")
+
+    # If it's another HTTPS URL, redirect
     if file_path.startswith("https://"):
         return RedirectResponse(url=file_path, status_code=307)
 
