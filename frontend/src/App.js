@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import AdminDashboard from './pages/AdminDashboard';
 import ARViewerModelViewer from './pages/ARViewerModelViewer';
 import ARViewer from './pages/ARViewer';
+import ARPublicViewer from './pages/ARPublicViewer';
 import './App.css';
 
 function App() {
@@ -23,6 +24,9 @@ function App() {
   return (
     <Router>
       <Routes>
+        {/* Public AR Viewer - Restaurant Product AR Display */}
+        <Route path="/ar/:restaurantId/:productId" element={<ARPublicViewer />} />
+
         {/* Primary: Google model-viewer with native AR support */}
         <Route path="/view/:modelId" element={<ARViewerModelViewer />} />
         {/* Fallback: WebXR implementation */}

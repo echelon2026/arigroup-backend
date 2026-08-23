@@ -243,6 +243,24 @@
   color: #ff8888;
 }
 
+.ar-header {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 12px 20px;
+  border-radius: 8px;
+  z-index: 50;
+  backdrop-filter: blur(10px);
+}
+
+.ar-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
 @media (max-width: 768px) {
   .exit-btn {
     padding: 8px 16px;
@@ -257,5 +275,15 @@
     width: 280px;
     bottom: 70px;
     right: 10px;
+  }
+
+  .ar-header {
+    top: 10px;
+    left: 10px;
+    padding: 8px 12px;
+  }
+
+  .ar-header h2 {
+    font-size: 14px;
   }
 }
