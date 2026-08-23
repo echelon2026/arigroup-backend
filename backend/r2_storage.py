@@ -72,6 +72,42 @@ def get_content_type(file_ext: str) -> str:
     return content_types.get(file_ext.lower(), "application/octet-stream")
 
 
+def upload_metadata_to_r2(model_id: str, metadata: dict) -> None:
+    """Store a small JSON sidecar for a model's metadata in R2, under a flat
+    `metadata/{model_id}.json` key (independent of restaurant_id). Render's
+    free tier resets the backend's local disk (and in-memory models_db) on
+    every redeploy and on every idle spin-down, which was silently making
+    every previously issued QR code/link 404 with "Model not found" even
+    though the GLB itself was still safely sitting in R2. This sidecar lets
+    the backend reconstruct a model's metadata from R2 alone after a
+    restart, instead of depending on ephemeral local state."""
+    if not R2_AVAILABLE:
+        raise RuntimeError("Cloudflare R2 not configured - R2 credentials required")
+
+    import json
+    r2_client.put_object(
+        Bucket=R2_BUCKET_NAME,
+        Key=f"metadata/{model_id}.json",
+        Body=json.dumps(metadata).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
+def download_metadata_from_r2(model_id: str):
+    """Fetch a model's metadata sidecar from R2. Returns None if it doesn't
+    exist (e.g. the model was never uploaded, or predates this sidecar)."""
+    if not R2_AVAILABLE:
+        return None
+
+    import json
+    from botocore.exceptions import ClientError
+    try:
+        response = r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=f"metadata/{model_id}.json")
+        return json.loads(response["Body"].read())
+    except ClientError:
+        return None
+
+
 def delete_model_from_r2(restaurant_id: str, model_id: str, file_ext: str) -> bool:
     """Delete model file from R2"""
     if not R2_AVAILABLE:

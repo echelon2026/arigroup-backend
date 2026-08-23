@@ -28,7 +28,11 @@ function App() {
         <Route path="/ar/:restaurantId/:productId" element={<ARPublicViewer />} />
 
         {/* Primary: Google model-viewer with native AR support */}
-        <Route path="/view/:modelId" element={<ARViewerModelViewer />} />
+        {/* Wildcard (not :modelId) so full URLs like /view/https://host/a/b.glb
+            still route here -- a plain :modelId param only matches a single
+            path segment and silently fails to match anything (blank page)
+            once the model id itself contains slashes. */}
+        <Route path="/view/*" element={<ARViewerModelViewer />} />
         {/* Fallback: WebXR implementation */}
         <Route path="/view-webxr/:modelId" element={<ARViewer />} />
         <Route path="/login" element={<Login setIsLoggedIn={setIsLoggedIn} />} />

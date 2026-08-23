@@ -8,7 +8,19 @@ import '../styles/ARViewerModelViewer.css';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 function ARViewerModelViewer() {
-  const { modelId } = useParams();
+  // Route is "/view/*" (not "/view/:modelId") so that full URLs -- which
+  // contain slashes -- still match. A plain ":modelId" param only ever
+  // captures a single path segment; anything with extra slashes (e.g. a
+  // public https:// URL) simply failed to match any route at all, leaving
+  // <Routes> with nothing to render and the page permanently blank.
+  const params = useParams();
+  const rawModelId = params['*'] || '';
+  // Browsers collapse the "//" that follows a path segment, so
+  // "/view/https://host/a.glb" arrives here as "https:/host/a.glb". Restore
+  // the double slash so it's a valid absolute URL again.
+  const modelId = /^https?:\/(?!\/)/.test(rawModelId)
+    ? rawModelId.replace(/^(https?:)\//, '$1//')
+    : rawModelId;
   const modelViewerRef = useRef(null);
   const arTriedRef = useRef(false);
 
@@ -31,8 +43,12 @@ function ARViewerModelViewer() {
     ? modelId
     : `${API_URL}/model/${modelId}`;
 
-  // Fetch model metadata (scale, info)
+  // Fetch model metadata (scale, info). Only applies to backend-hosted
+  // model IDs -- a full URL has no corresponding /model/{id}/info endpoint,
+  // so skip the (guaranteed-404) request and just use the default scale.
   useEffect(() => {
+    if (modelId.startsWith('http')) return;
+
     const fetchModelMetadata = async () => {
       const infoUrl = `${API_URL}/model/${modelId}/info`;
       try {

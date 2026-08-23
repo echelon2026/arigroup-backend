@@ -10,7 +10,7 @@ from datetime import datetime
 import json
 import tempfile
 from model_converter import get_or_create_dual_format
-from r2_storage import upload_model_to_r2, R2_AVAILABLE
+from r2_storage import upload_model_to_r2, upload_metadata_to_r2, download_metadata_from_r2, R2_AVAILABLE
 
 load_dotenv()
 
@@ -203,6 +203,14 @@ async def upload_model(
         models_db[model_id] = model_data
         persist_models_index()
 
+        if R2_AVAILABLE:
+            try:
+                upload_metadata_to_r2(model_id, model_data)
+            except Exception as e:
+                # Non-fatal: the model still works until this backend
+                # instance restarts, it just won't survive that restart.
+                print(f"Warning: failed to upload metadata sidecar to R2: {e}")
+
         return {
             "id": model_id,
             "message": f"Model uploaded successfully to {storage_type}",
@@ -283,6 +291,27 @@ async def download_from_r2(r2_url: str):
     response = r2_client.get_object(Bucket=bucket, Key=key)
     return response["Body"].read()
 
+def get_model_or_404(model_id: str) -> dict:
+    """Look up a model's metadata, falling back to R2's metadata sidecar
+    (see r2_storage.upload_metadata_to_r2) when it's missing from the
+    in-memory/local-disk models_db -- which happens after every Render
+    free-tier restart, since that store is ephemeral and previously was
+    the *only* place model metadata lived. Repopulates models_db on a
+    successful fallback so subsequent lookups in this process are fast."""
+    model = models_db.get(model_id)
+    if model is not None:
+        return model
+
+    if R2_AVAILABLE:
+        model = download_metadata_from_r2(model_id)
+        if model is not None:
+            models_db[model_id] = model
+            persist_models_index()
+            return model
+
+    raise HTTPException(status_code=404, detail="Model not found")
+
+
 @app.get("/model/{model_id}/info")
 async def get_model_info(model_id: str):
     """Lightweight JSON metadata for a model. The AR viewer needs this to
@@ -293,10 +322,7 @@ async def get_model_info(model_id: str):
     model actually rendered. This is what was making uploaded models
     (e.g. the cube) show up oversized in AR regardless of what scale was
     set at upload time."""
-    if model_id not in models_db:
-        raise HTTPException(status_code=404, detail="Model not found")
-
-    model = models_db[model_id]
+    model = get_model_or_404(model_id)
     return {
         "id": model["id"],
         "name": model.get("name"),
@@ -306,10 +332,7 @@ async def get_model_info(model_id: str):
 
 @app.get("/model/{model_id}")
 async def get_model_file(model_id: str):
-    if model_id not in models_db:
-        raise HTTPException(status_code=404, detail="Model not found")
-
-    model = models_db[model_id]
+    model = get_model_or_404(model_id)
     file_path = model["file_path"]
 
     # If it's an R2 URL, fetch with authentication and serve
