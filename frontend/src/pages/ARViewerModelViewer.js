@@ -268,8 +268,8 @@ function ARViewerModelViewer() {
         </div>
       )}
 
-      <button className="exit-btn" onClick={() => { window.location.href = '/'; }}>
-        ✕ Exit
+      <button className="exit-btn" onClick={() => { window.history.back(); }}>
+        ← Back
       </button>
     </div>
   );
