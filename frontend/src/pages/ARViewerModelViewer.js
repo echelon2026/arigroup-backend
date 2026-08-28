@@ -193,7 +193,7 @@ function ARViewerModelViewer() {
         ar
         ar-modes="scene-viewer quick-look webxr"
         camera-controls
-        auto-rotate
+        interaction-prompt="none"
         shadow-intensity="1"
         environment-image="neutral"
         scale={`${scale} ${scale} ${scale}`}
