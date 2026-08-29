@@ -328,7 +328,41 @@ async def get_model_info(model_id: str):
         "name": model.get("name"),
         "file_type": model.get("file_type"),
         "scale": model.get("scale", 1.0),
+        # The iOS AR viewer needs to know, before it tries anything, whether
+        # a USDZ (the only format AR Quick Look accepts) actually exists for
+        # this model. Today that's only true when USDZ was the originally
+        # uploaded file -- see the /model/{model_id}/usdz docstring below
+        # for why the GLB->USDZ conversion path doesn't count yet.
+        "usdz_available": (model.get("file_type") or "").lower() == "usdz",
     }
+
+@app.get("/model/{model_id}/usdz")
+async def get_model_usdz(model_id: str):
+    """Serve this model's USDZ variant for iOS AR Quick Look.
+
+    Quick Look identifies AR content strictly by file extension/content
+    type, and the primary /model/{model_id} endpoint serves whatever format
+    was originally uploaded (usually GLB) behind an extension-less URL --
+    which Quick Look cannot open. This gives iOS clients an unambiguous
+    USDZ URL to point `ios-src`/`rel="ar"` at.
+
+    NOTE: get_or_create_dual_format() (model_converter.py) already attempts
+    a GLB->USDZ conversion at upload time, but only the *primary* uploaded
+    format is ever persisted to R2/local storage -- the generated sibling
+    file lives in a temp dir that's deleted at the end of the upload
+    request. So today this only succeeds for models that were *uploaded*
+    as USDZ directly; it 404s (cleanly, so the frontend can fall back
+    instead of showing a broken AR button) for GLB-uploaded models until
+    the upload flow is extended to persist both variants.
+    """
+    model = get_model_or_404(model_id)
+    file_type = (model.get("file_type") or "").lower()
+    if file_type != "usdz":
+        raise HTTPException(
+            status_code=404,
+            detail="No USDZ variant available for this model yet",
+        )
+    return await get_model_file(model_id)
 
 @app.get("/model/{model_id}")
 async def get_model_file(model_id: str):

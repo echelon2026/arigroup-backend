@@ -3,9 +3,29 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Login from './pages/Login';
 import AdminDashboard from './pages/AdminDashboard';
 import ARViewerModelViewer from './pages/ARViewerModelViewer';
+import ARVieweriOS from './pages/ARVieweriOS';
 import ARViewer from './pages/ARViewer';
 import ARPublicViewer from './pages/ARPublicViewer';
+import { isIOS } from './utils/platformDetection';
 import './App.css';
+
+/**
+ * Platform fork for /view/*.
+ *
+ * Android (and everything else -- desktop, unknown UAs) keeps using
+ * ARViewerModelViewer as-is: model-viewer's `ar-modes="scene-viewer webxr"`
+ * paths already work correctly with a plain GLB there. iOS gets routed to
+ * ARVieweriOS, which resolves a USDZ for AR Quick Look and applies
+ * iOS-specific camera/gesture/AR defaults instead -- see that file for why
+ * it isn't just a reskin.
+ *
+ * The check runs once per mount (the platform can't change mid-session)
+ * rather than on every render.
+ */
+function PlatformARRouter() {
+  const [onIOS] = useState(() => isIOS());
+  return onIOS ? <ARVieweriOS /> : <ARViewerModelViewer />;
+}
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -32,7 +52,7 @@ function App() {
             still route here -- a plain :modelId param only matches a single
             path segment and silently fails to match anything (blank page)
             once the model id itself contains slashes. */}
-        <Route path="/view/*" element={<ARViewerModelViewer />} />
+        <Route path="/view/*" element={<PlatformARRouter />} />
         {/* Fallback: WebXR implementation */}
         <Route path="/view-webxr/:modelId" element={<ARViewer />} />
         <Route path="/login" element={<Login setIsLoggedIn={setIsLoggedIn} />} />
