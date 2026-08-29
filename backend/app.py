@@ -1,10 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 import os
 from dotenv import load_dotenv
 import qrcode
 from io import BytesIO
+import base64
 import uuid
 from datetime import datetime
 import json
@@ -283,48 +284,85 @@ async def upload_model(
 async def list_models(restaurant_id: str):
     return [m for m in models_db.values() if m["restaurant_id"] == restaurant_id]
 
+def get_qr_target_url(model_id: str) -> str:
+    """The public AR viewer URL a model's QR code should point at."""
+    frontend_url = os.getenv("FRONTEND_URL", "https://arigroup.space").rstrip("/")
+    return f"{frontend_url}/view/{model_id}"
+
+
+# In-memory cache of generated QR PNGs, keyed by model_id. The image is
+# fully determined by model_id + FRONTEND_URL, so there's no reason to
+# re-run QR generation on every scan or dashboard refresh.
+_qr_png_cache: dict[str, bytes] = {}
+
+
+def render_qr_png(target_url: str) -> bytes:
+    """Render a QR code PNG for the given URL. Uses error-correction level H
+    (the highest level - tolerates up to ~30% damage/obstruction) since
+    these codes get printed, laminated, taped to surfaces, and scanned by
+    ordinary phone cameras under imperfect real-world lighting."""
+    qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=10,
+        border=4,  # spec-minimum quiet zone; keeps scanners happy
+    )
+    qr.add_data(target_url)
+    qr.make(fit=True)  # auto-picks the smallest version that fits the URL
+
+    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def get_qr_png_for_model(model_id: str) -> bytes:
+    cached = _qr_png_cache.get(model_id)
+    if cached is not None:
+        return cached
+    png_bytes = render_qr_png(get_qr_target_url(model_id))
+    _qr_png_cache[model_id] = png_bytes
+    return png_bytes
+
+
+@app.get("/qr/{model_id}")
+async def get_qr_code(model_id: str):
+    """Return a QR code PNG pointing at this model's public AR viewer URL
+    (https://arigroup.space/view/{model_id}, or FRONTEND_URL if set).
+    Meant to be used directly as an <img src>/download target - e.g. via
+    the qr_code_url returned from /model/{model_id}/info."""
+    get_model_or_404(model_id)
+    png_bytes = get_qr_png_for_model(model_id)
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Content-Disposition": f"inline; filename={model_id}.png",
+        },
+    )
+
+
 @app.post("/qr/{model_id}")
 async def generate_qr(model_id: str):
-    if model_id not in models_db:
-        raise HTTPException(status_code=404, detail="Model not found")
+    """Legacy JSON-wrapped variant for the admin dashboard, which embeds the
+    PNG as a base64 data URL for direct <img src> use client-side without a
+    second request. New integrations should just use GET /qr/{model_id}."""
+    get_model_or_404(model_id)
+    qr_url = get_qr_target_url(model_id)
+    png_bytes = get_qr_png_for_model(model_id)
 
-    model = models_db[model_id]
-    restaurant_id = model["restaurant_id"]
-
-    # Create QR code URL pointing to production frontend
-    frontend_url = os.getenv("FRONTEND_URL", "https://arigroup.space")
-    qr_url = f"{frontend_url}/view/{model_id}"
-
-    # Generate QR code image
-    qr = qrcode.QRCode(version=1, box_size=10, border=5)
-    qr.add_data(qr_url)
-    qr.make(fit=True)
-
-    img = qr.make_image(fill_color="black", back_color="white")
-
-    # Save QR image locally
     qr_id = str(uuid.uuid4())
-    os.makedirs(f"{UPLOAD_DIR}/qr/{restaurant_id}", exist_ok=True)
-    qr_image_path = f"{UPLOAD_DIR}/qr/{restaurant_id}/{qr_id}.png"
-
-    img.save(qr_image_path)
-
-    # Save metadata
-    qr_data = {
+    qr_codes_db[qr_id] = {
         "id": qr_id,
-        "restaurant_id": restaurant_id,
         "model_id": model_id,
         "code_url": qr_url,
-        "qr_image_path": qr_image_path,
-        "created_at": datetime.utcnow().isoformat()
+        "created_at": datetime.utcnow().isoformat(),
     }
-
-    qr_codes_db[qr_id] = qr_data
 
     return {
         "qr_id": qr_id,
         "qr_url": qr_url,
-        "qr_image_url": f"data:image/png;base64,{__import__('base64').b64encode(open(qr_image_path, 'rb').read()).decode()}"
+        "qr_image_url": f"data:image/png;base64,{base64.b64encode(png_bytes).decode()}",
     }
 
 async def download_from_r2(r2_url: str):
@@ -393,6 +431,10 @@ async def get_model_info(model_id: str):
         # a USDZ (the only format AR Quick Look accepts) actually exists for
         # this model.
         "usdz_available": bool(model.get("usdz_path")),
+        # Relative path to this model's QR code PNG (GET /qr/{model_id}),
+        # pointing at its public AR viewer URL. Relative so callers combine
+        # it with whatever base URL they're already using for this API.
+        "qr_code_url": f"/qr/{model_id}",
     }
 
 @app.get("/model/{model_id}/usdz")
