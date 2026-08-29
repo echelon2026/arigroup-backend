@@ -10,7 +10,7 @@ from datetime import datetime
 import json
 import tempfile
 from model_converter import get_or_create_dual_format
-from r2_storage import upload_model_to_r2, upload_metadata_to_r2, download_metadata_from_r2, R2_AVAILABLE
+from r2_storage import upload_model_to_r2, upload_usdz_to_r2, upload_metadata_to_r2, download_metadata_from_r2, R2_AVAILABLE
 
 load_dotenv()
 
@@ -170,21 +170,71 @@ async def upload_model(
         # Convert to dual-format (GLB + USDZ) for cross-platform AR
         formats = get_or_create_dual_format(temp_file_path, restaurant_id, model_id, temp_dir)
 
-        # Upload to R2 or fall back to local storage
+        # Determine, from the *original* upload's extension (not the
+        # dual-format dict alone, which fills in a same-path fallback even
+        # when conversion silently no-ops), whether a genuine USDZ sibling
+        # exists to persist alongside the primary file.
+        usdz_source_path = None
+        if file_ext == "usdz":
+            usdz_source_path = temp_file_path
+        elif file_ext == "glb":
+            candidate = formats.get("usdz_path")
+            if (
+                candidate
+                and candidate != formats.get("glb_path")
+                and os.path.exists(candidate)
+                and os.path.getsize(candidate) > 0
+            ):
+                usdz_source_path = candidate
+        # else: OBJ/glTF primary uploads - get_or_create_dual_format doesn't
+        # attempt a real conversion for these, so there's nothing genuine to
+        # persist as USDZ.
+
+        # Upload the primary file to R2 or fall back to local storage
+        primary_ext = file_ext
         if R2_AVAILABLE:
             try:
                 primary_file = formats.get("glb_path") or temp_file_path
-                primary_ext = os.path.splitext(primary_file)[1].lstrip('.')
+                primary_ext = os.path.splitext(primary_file)[1].lstrip('.') or file_ext
                 file_url = upload_model_to_r2(primary_file, restaurant_id, model_id, primary_ext)
                 storage_type = "Cloudflare R2 (persistent CDN)"
             except Exception as e:
                 print(f"⚠️  R2 upload failed: {e}, falling back to local storage")
                 file_url = temp_file_path
+                primary_ext = file_ext
                 storage_type = "temporary local storage"
         else:
             # Fall back to local temp storage if R2 not configured
             file_url = temp_file_path
             storage_type = "temporary local storage (R2 not configured)"
+
+        # Persist the USDZ sibling to R2 too, under its own predictable key
+        # (`{restaurant_id}/{model_id}.usdz`), so /model/{id}/usdz -- and
+        # therefore iOS Quick Look AR -- works for every model that has one,
+        # not just models that happened to be uploaded as USDZ directly.
+        # Without this, get_or_create_dual_format()'s generated USDZ lived
+        # only in `temp_dir`, which is deleted in the `finally` block below
+        # before any client could ever fetch it.
+        usdz_r2_url = None
+        if usdz_source_path and R2_AVAILABLE:
+            if usdz_source_path == temp_file_path and primary_ext == "usdz":
+                # The primary upload above already put this exact USDZ file
+                # in R2 (happens when USDZ was uploaded directly and GLB
+                # conversion failed/was skipped) - reuse that URL instead of
+                # uploading the same bytes twice.
+                usdz_r2_url = file_url
+            else:
+                try:
+                    usdz_r2_url = upload_usdz_to_r2(usdz_source_path, restaurant_id, model_id)
+                except Exception as e:
+                    print(f"Warning: failed to upload USDZ variant to R2: {e}")
+
+        # file_url only actually contains GLB bytes when the primary upload
+        # resolved to a .glb file (see primary_ext above) - surface that
+        # explicitly so /model/{id}/info can report it distinctly from the
+        # legacy file_path/file_type pair, which reflects the *originally
+        # uploaded* format rather than what ended up at that URL.
+        glb_r2_url = file_url if primary_ext == "glb" else None
 
         # Save metadata
         model_data = {
@@ -197,6 +247,8 @@ async def upload_model(
             "file_size": len(content),
             "scale": scale,
             "formats": formats,
+            "glb_path": glb_r2_url,
+            "usdz_path": usdz_r2_url,
             "created_at": datetime.utcnow().isoformat()
         }
 
@@ -216,7 +268,10 @@ async def upload_model(
             "message": f"Model uploaded successfully to {storage_type}",
             "file_url": file_url,
             "formats": formats,
-            "storage": storage_type
+            "storage": storage_type,
+            "glb_path": glb_r2_url,
+            "usdz_path": usdz_r2_url,
+            "usdz_available": usdz_r2_url is not None,
         }
     finally:
         # Clean up temp directory
@@ -328,12 +383,16 @@ async def get_model_info(model_id: str):
         "name": model.get("name"),
         "file_type": model.get("file_type"),
         "scale": model.get("scale", 1.0),
+        # Explicit per-variant R2 URLs, persisted at upload time (see
+        # /models/upload) - None when that variant isn't available for this
+        # model (e.g. an OBJ upload has neither, an old model uploaded
+        # before this field existed has no usdz_path).
+        "glb_path": model.get("glb_path"),
+        "usdz_path": model.get("usdz_path"),
         # The iOS AR viewer needs to know, before it tries anything, whether
         # a USDZ (the only format AR Quick Look accepts) actually exists for
-        # this model. Today that's only true when USDZ was the originally
-        # uploaded file -- see the /model/{model_id}/usdz docstring below
-        # for why the GLB->USDZ conversion path doesn't count yet.
-        "usdz_available": (model.get("file_type") or "").lower() == "usdz",
+        # this model.
+        "usdz_available": bool(model.get("usdz_path")),
     }
 
 @app.get("/model/{model_id}/usdz")
@@ -346,44 +405,47 @@ async def get_model_usdz(model_id: str):
     which Quick Look cannot open. This gives iOS clients an unambiguous
     USDZ URL to point `ios-src`/`rel="ar"` at.
 
-    NOTE: get_or_create_dual_format() (model_converter.py) already attempts
-    a GLB->USDZ conversion at upload time, but only the *primary* uploaded
-    format is ever persisted to R2/local storage -- the generated sibling
-    file lives in a temp dir that's deleted at the end of the upload
-    request. So today this only succeeds for models that were *uploaded*
-    as USDZ directly; it 404s (cleanly, so the frontend can fall back
-    instead of showing a broken AR button) for GLB-uploaded models until
-    the upload flow is extended to persist both variants.
+    /models/upload persists a real USDZ sibling to R2 (under
+    `{restaurant_id}/{model_id}.usdz`) for every model where one is
+    available -- whether it was uploaded directly or converted from GLB by
+    get_or_create_dual_format() -- and records that URL as `usdz_path` on
+    the model's metadata. This 404s (cleanly, so the frontend can fall back
+    instead of showing a broken AR button) only when no USDZ variant is
+    available at all, e.g. an OBJ upload, or a model uploaded before this
+    field existed.
     """
     model = get_model_or_404(model_id)
-    file_type = (model.get("file_type") or "").lower()
-    if file_type != "usdz":
+    usdz_location = model.get("usdz_path")
+    if not usdz_location:
         raise HTTPException(
             status_code=404,
             detail="No USDZ variant available for this model yet",
         )
-    return await get_model_file(model_id)
+    return await serve_model_variant(usdz_location, "usdz", model_id)
 
-@app.get("/model/{model_id}")
-async def get_model_file(model_id: str):
-    model = get_model_or_404(model_id)
-    file_path = model["file_path"]
+MODEL_MEDIA_TYPES = {
+    "obj": "text/plain",
+    "gltf": "model/gltf+json",
+    "glb": "model/gltf-binary",
+    "usdz": "model/vnd.usdz+zip"
+}
+
+
+async def serve_model_variant(file_location: str, file_type: str, model_id: str):
+    """Shared file-serving logic for a single model variant (primary file,
+    or a specific format like USDZ): fetches from R2 with authentication if
+    `file_location` is an R2 URL, redirects for other https:// URLs, or
+    serves from local disk as a fallback. Used by both /model/{id} (the
+    model's primary/original format) and /model/{id}/usdz (its persisted
+    USDZ sibling, if any)."""
+    file_type = (file_type or "glb").lower()
+    media_type = MODEL_MEDIA_TYPES.get(file_type, "application/octet-stream")
 
     # If it's an R2 URL, fetch with authentication and serve
-    if file_path.startswith("https://") and "r2.cloudflarestorage.com" in file_path:
+    if file_location.startswith("https://") and "r2.cloudflarestorage.com" in file_location:
         from fastapi.responses import StreamingResponse
         try:
-            # Download from R2 with authentication
-            response = await download_from_r2(file_path)
-            media_types = {
-                "obj": "text/plain",
-                "gltf": "model/gltf+json",
-                "glb": "model/gltf-binary",
-                "usdz": "model/vnd.usdz+zip"
-            }
-            file_type = model.get("file_type", "glb").lower()
-            media_type = media_types.get(file_type, "application/octet-stream")
-
+            response = await download_from_r2(file_location)
             return StreamingResponse(
                 iter([response]),
                 media_type=media_type,
@@ -393,26 +455,18 @@ async def get_model_file(model_id: str):
             raise HTTPException(status_code=500, detail=f"Failed to fetch from R2: {str(e)}")
 
     # If it's another HTTPS URL, redirect
-    if file_path.startswith("https://"):
-        return RedirectResponse(url=file_path, status_code=307)
+    if file_location.startswith("https://"):
+        return RedirectResponse(url=file_location, status_code=307)
 
     # Otherwise serve from local disk (fallback)
-    if not os.path.exists(file_path):
+    if not os.path.exists(file_location):
         raise HTTPException(status_code=404, detail="Model file not found")
 
     from fastapi.responses import FileResponse
-    media_types = {
-        "obj": "text/plain",
-        "gltf": "model/gltf+json",
-        "glb": "model/gltf-binary",
-        "usdz": "model/vnd.usdz+zip"
-    }
-    file_type = model.get("file_type", "glb").lower()
-    media_type = media_types.get(file_type, "application/octet-stream")
-    file_size = os.path.getsize(file_path)
+    file_size = os.path.getsize(file_location)
 
     return FileResponse(
-        file_path,
+        file_location,
         media_type=media_type,
         headers={
             "Cache-Control": "public, max-age=3600",
@@ -423,6 +477,12 @@ async def get_model_file(model_id: str):
             "Content-Length": str(file_size),
         }
     )
+
+
+@app.get("/model/{model_id}")
+async def get_model_file(model_id: str):
+    model = get_model_or_404(model_id)
+    return await serve_model_variant(model["file_path"], model.get("file_type", "glb"), model_id)
 
 
 @app.options("/model/{model_id}")

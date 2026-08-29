@@ -61,6 +61,20 @@ def upload_model_to_r2(file_path: str, restaurant_id: str, model_id: str, file_e
         return f"https://{R2_BUCKET_NAME}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{r2_key}"
 
 
+def upload_usdz_to_r2(file_path: str, restaurant_id: str, model_id: str) -> str:
+    """
+    Upload a model's USDZ sibling to R2 under a fixed, predictable key
+    (`{restaurant_id}/{model_id}.usdz`), independent of whatever format was
+    uploaded as the model's primary file. This gives iOS Quick Look AR a
+    stable URL to fetch regardless of whether the model was uploaded as
+    GLB (then converted to USDZ) or as USDZ directly.
+
+    Returns:
+        Public URL of the uploaded USDZ file
+    """
+    return upload_model_to_r2(file_path, restaurant_id, model_id, "usdz")
+
+
 def get_content_type(file_ext: str) -> str:
     """Get correct content type for 3D model files"""
     content_types = {

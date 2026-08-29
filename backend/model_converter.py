@@ -73,6 +73,13 @@ def get_or_create_dual_format(
         dict with 'glb_path' and 'usdz_path', or just original if conversion fails
     """
     base_path = os.path.join(upload_dir, restaurant_id, model_id)
+    # The conversion subprocess writes its output to `{base_path}.{ext}`,
+    # but nothing else ever creates the `{upload_dir}/{restaurant_id}/`
+    # directory it lives in - without this, every conversion attempt fails
+    # with ENOENT and silently looks like "conversion tool unavailable"
+    # (ie. ends up on the graceful-fallback path below regardless of
+    # whether gltf-transform itself is actually installed).
+    os.makedirs(os.path.dirname(base_path), exist_ok=True)
 
     if is_glb(uploaded_file_path):
         glb_path = uploaded_file_path
