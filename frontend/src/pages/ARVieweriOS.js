@@ -84,14 +84,17 @@ function ARVieweriOS() {
         if (response.ok) {
           const data = await response.json();
           if (cancelled) return;
+          console.log('Model info loaded:', { usdz_available: data.usdz_available, name: data.name });
           setScale(data.scale || 1.0);
           setModelName(data.name || '');
           if (data.usdz_available) {
             setUsdzSrc(`${API_URL}/model/${modelId}/usdz`);
           }
+        } else {
+          console.warn(`Failed to load model info: HTTP ${response.status}`);
         }
-      } catch {
-        // Non-fatal -- the 3D preview can still work without AR.
+      } catch (err) {
+        console.error('Error fetching model info:', err);
       } finally {
         if (!cancelled) setUsdzChecked(true);
       }
@@ -109,7 +112,10 @@ function ARVieweriOS() {
 
   const handleError = useCallback((event) => {
     setStatus('error');
-    setErrorMessage(event?.detail?.type || 'Failed to load model');
+    const errorDetail = event?.detail;
+    const errorMsg = errorDetail?.type || errorDetail?.message || 'Failed to load model';
+    console.error('Model viewer error:', errorDetail);
+    setErrorMessage(errorMsg);
   }, []);
 
   const handleArStatus = useCallback((event) => {
