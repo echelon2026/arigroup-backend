@@ -27,15 +27,27 @@ def convert_glb_to_usdz(glb_path: str, usdz_path: str) -> bool:
         True if conversion succeeded, False if skipped
     """
     try:
-        # Try using gltf-transform if available
+        # Try using gltf-transform via npx (requires Node.js + npm)
         result = subprocess.run(
             ['npx', 'gltf-transform', 'convert', glb_path, usdz_path],
             capture_output=True,
             timeout=30
         )
+        if result.returncode == 0:
+            return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    try:
+        # Fallback: try using gltf-transform if installed globally
+        result = subprocess.run(
+            ['gltf-transform', 'convert', glb_path, usdz_path],
+            capture_output=True,
+            timeout=30
+        )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        # Conversion tool not available - model-viewer will fallback to GLB for iOS
+        # Conversion tools not available - model-viewer will fallback to GLB for iOS
         return False
 
 
