@@ -169,7 +169,9 @@ async def upload_model(
 
     try:
         # Convert to dual-format (GLB + USDZ) for cross-platform AR
+        print(f"📁 Converting {file_ext.upper()} model {model_id}...")
         formats = get_or_create_dual_format(temp_file_path, restaurant_id, model_id, temp_dir)
+        print(f"📦 Formats after conversion: {formats}")
 
         # Determine, from the *original* upload's extension (not the
         # dual-format dict alone, which fills in a same-path fallback even

@@ -31,24 +31,39 @@ def convert_glb_to_usdz(glb_path: str, usdz_path: str) -> bool:
         result = subprocess.run(
             ['npx', 'gltf-transform', 'convert', glb_path, usdz_path],
             capture_output=True,
-            timeout=30
+            timeout=30,
+            cwd=os.path.dirname(glb_path) or '.'
         )
         if result.returncode == 0:
+            print(f"✓ USDZ conversion successful via npx: {usdz_path}")
             return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+        else:
+            print(f"✗ npx gltf-transform failed: {result.stderr.decode()[:200]}")
+    except FileNotFoundError:
+        print("✗ npx not found, trying gltf-transform command")
+    except subprocess.TimeoutExpired:
+        print("✗ USDZ conversion timed out")
 
     try:
         # Fallback: try using gltf-transform if installed globally
         result = subprocess.run(
             ['gltf-transform', 'convert', glb_path, usdz_path],
             capture_output=True,
-            timeout=30
+            timeout=30,
+            cwd=os.path.dirname(glb_path) or '.'
         )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        # Conversion tools not available - model-viewer will fallback to GLB for iOS
-        return False
+        if result.returncode == 0:
+            print(f"✓ USDZ conversion successful via gltf-transform: {usdz_path}")
+            return True
+        else:
+            print(f"✗ gltf-transform failed: {result.stderr.decode()[:200]}")
+    except FileNotFoundError:
+        print("✗ gltf-transform command not found - USDZ generation unavailable")
+    except subprocess.TimeoutExpired:
+        print("✗ gltf-transform conversion timed out")
+
+    print(f"⚠ USDZ generation unavailable - iOS AR will use GLB fallback")
+    return False
 
 
 def convert_usdz_to_glb(usdz_path: str, glb_path: str) -> bool:
