@@ -142,6 +142,23 @@ function ARVieweriOS() {
     };
   }, [handleLoad, handleError, handleArStatus]);
 
+  // Set ios-src and ar attributes only when USDZ is available.
+  // React JSX doesn't handle hyphenated attributes well, so set them via DOM.
+  useEffect(() => {
+    const el = modelViewerRef.current;
+    if (!el) return;
+
+    if (usdzSrc) {
+      el.setAttribute('ios-src', usdzSrc);
+      el.setAttribute('ar', 'true');
+      console.log('USDZ enabled for iOS AR Quick Look');
+    } else {
+      el.removeAttribute('ios-src');
+      el.removeAttribute('ar');
+      console.log('USDZ not available - iOS will use GLB preview only');
+    }
+  }, [usdzSrc]);
+
   const retry = () => {
     setErrorMessage('');
     setStatus('loading');
@@ -192,9 +209,7 @@ function ARVieweriOS() {
       <model-viewer
         ref={modelViewerRef}
         src={modelSrc}
-        ios-src={usdzSrc || undefined}
         alt={modelName || '3D model'}
-        ar={usdzSrc ? true : undefined}
         ar-modes="quick-look"
         ar-scale="fixed"
         ar-placement="floor"
