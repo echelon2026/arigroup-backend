@@ -468,6 +468,86 @@ async def get_model_usdz(model_id: str):
     return await serve_model_variant(usdz_location, "usdz", model_id)
 
 
+@app.post("/model/{model_id}/convert-usdz")
+async def convert_model_to_usdz(model_id: str, glb_file: UploadFile = File(...)):
+    """Convert GLB to USDZ on-demand when iOS user requests AR.
+
+    Triggered by the iOS viewer when user clicks 'View in AR' and USDZ isn't available.
+    Tries multiple conversion methods and returns the USDZ file directly.
+    """
+    try:
+        # Read GLB file
+        glb_content = await glb_file.read()
+        if not glb_content:
+            raise HTTPException(status_code=400, detail="GLB file is empty")
+
+        print(f"🔄 Converting {glb_file.filename} to USDZ ({len(glb_content)} bytes)...")
+
+        # Try conversion methods in order
+        usdz_content = None
+
+        # Method 1: Try gltf-transform if available
+        import tempfile
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glb_path = os.path.join(tmpdir, f"{model_id}.glb")
+            usdz_path = os.path.join(tmpdir, f"{model_id}.usdz")
+
+            # Write GLB to temp file
+            with open(glb_path, 'wb') as f:
+                f.write(glb_content)
+
+            # Try gltf-transform
+            try:
+                result = subprocess.run(
+                    ['gltf-transform', 'convert', glb_path, usdz_path],
+                    capture_output=True,
+                    timeout=30
+                )
+                if result.returncode == 0 and os.path.exists(usdz_path):
+                    with open(usdz_path, 'rb') as f:
+                        usdz_content = f.read()
+                    print(f"✓ Converted using gltf-transform ({len(usdz_content)} bytes)")
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                print(f"⚠ gltf-transform not available: {e}")
+
+            # Method 2: Try npx gltf-transform
+            if not usdz_content:
+                try:
+                    result = subprocess.run(
+                        ['npx', 'gltf-transform', 'convert', glb_path, usdz_path],
+                        capture_output=True,
+                        timeout=30
+                    )
+                    if result.returncode == 0 and os.path.exists(usdz_path):
+                        with open(usdz_path, 'rb') as f:
+                            usdz_content = f.read()
+                        print(f"✓ Converted using npx gltf-transform ({len(usdz_content)} bytes)")
+                except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                    print(f"⚠ npx gltf-transform not available: {e}")
+
+        # If no conversion method worked, return error
+        if not usdz_content:
+            print("✗ All conversion methods failed - gltf-transform not available on server")
+            raise HTTPException(
+                status_code=503,
+                detail="USDZ conversion not available. Please ensure gltf-transform is installed on the server."
+            )
+
+        # Return USDZ file
+        return Response(
+            content=usdz_content,
+            media_type="model/vnd.usdz+zip",
+            headers={"Content-Disposition": f"inline; filename={model_id}.usdz"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"✗ Conversion error: {e}")
+        raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
+
+
 @app.post("/model/{model_id}/save-usdz")
 async def save_model_usdz(model_id: str, usdz_file: UploadFile = File(...)):
     """Save a USDZ file that was converted on the client (iOS viewer).
