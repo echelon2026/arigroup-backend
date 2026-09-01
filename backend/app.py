@@ -526,12 +526,12 @@ async def convert_model_to_usdz(model_id: str, glb_file: UploadFile = File(...))
                 except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                     print(f"⚠ npx gltf-transform not available: {e}")
 
-        # If no conversion method worked, return error
+        # If conversion failed, return helpful error
         if not usdz_content:
-            print("✗ All conversion methods failed - gltf-transform not available on server")
+            print("✗ USDZ conversion failed - gltf-transform not available")
             raise HTTPException(
                 status_code=503,
-                detail="USDZ conversion not available. Please ensure gltf-transform is installed on the server."
+                detail="USDZ conversion not available yet. gltf-transform is being installed on the server. Please try again in a few moments."
             )
 
         # Return USDZ file
