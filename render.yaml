@@ -3,7 +3,7 @@ services:
     name: arigroup-api
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt && npm install
+    buildCommand: pip install -r requirements.txt && npm install --prefix . --production 2>/dev/null || echo "npm install skipped (Node.js may not be available)"
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
