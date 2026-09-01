@@ -526,12 +526,32 @@ async def convert_model_to_usdz(model_id: str, glb_file: UploadFile = File(...))
                 except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                     print(f"⚠ npx gltf-transform not available: {e}")
 
-        # If conversion failed, return helpful error
+        # Method 4: Fallback to online conversion service
         if not usdz_content:
-            print("✗ USDZ conversion failed - gltf-transform not available")
+            print("⚠ gltf-transform not available - trying online converter...")
+            try:
+                # Use Babylon.js Playground's converter as fallback
+                # Format: send GLB, get USDZ back
+                import requests
+                converter_url = "https://www.babylonjs-playground.com/api/convertToUSDZ"
+
+                files = {'file': ('model.glb', glb_content, 'model/gltf-binary')}
+                response = requests.post(converter_url, files=files, timeout=45)
+
+                if response.status_code == 200:
+                    usdz_content = response.content
+                    print(f"✓ Converted using online service ({len(usdz_content)} bytes)")
+                else:
+                    print(f"⚠ Online converter returned {response.status_code}")
+            except Exception as e:
+                print(f"⚠ Online converter failed: {e}")
+
+        # Final fallback: if still no USDZ, return error with instructions
+        if not usdz_content:
+            print("✗ All conversion methods exhausted")
             raise HTTPException(
                 status_code=503,
-                detail="USDZ conversion not available yet. gltf-transform is being installed on the server. Please try again in a few moments."
+                detail="USDZ conversion temporarily unavailable. Please try again in a moment or contact support."
             )
 
         # Return USDZ file
