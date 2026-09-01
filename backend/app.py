@@ -11,7 +11,7 @@ from datetime import datetime
 import json
 import tempfile
 from model_converter import get_or_create_dual_format
-from r2_storage import upload_model_to_r2, upload_usdz_to_r2, upload_metadata_to_r2, download_metadata_from_r2, R2_AVAILABLE
+from r2_storage import upload_model_to_r2, upload_usdz_to_r2, upload_usdz_to_r2_bytes, upload_metadata_to_r2, download_metadata_from_r2, R2_AVAILABLE
 
 load_dotenv()
 
@@ -466,6 +466,64 @@ async def get_model_usdz(model_id: str):
             detail="No USDZ variant available for this model yet",
         )
     return await serve_model_variant(usdz_location, "usdz", model_id)
+
+
+@app.post("/model/{model_id}/save-usdz")
+async def save_model_usdz(model_id: str, usdz_file: UploadFile = File(...)):
+    """Save a USDZ file that was converted on the client (iOS viewer).
+
+    When iOS user requests AR, the frontend converts GLB→USDZ in the browser,
+    then uploads it here to be persisted in R2 for future use.
+    """
+    model = get_model_or_404(model_id)
+    restaurant_id = model.get("restaurant_id")
+
+    try:
+        # Read USDZ file content
+        usdz_content = await usdz_file.read()
+
+        if not usdz_content:
+            raise HTTPException(status_code=400, detail="USDZ file is empty")
+
+        # Upload to R2
+        if R2_AVAILABLE:
+            try:
+                usdz_url = upload_usdz_to_r2_bytes(usdz_content, restaurant_id, model_id)
+
+                # Update model metadata to record USDZ path
+                model["usdz_path"] = usdz_url
+                models_db[model_id] = model
+                persist_models_index()
+
+                try:
+                    upload_metadata_to_r2(model_id, model)
+                except Exception as e:
+                    print(f"Warning: failed to update metadata sidecar: {e}")
+
+                print(f"✓ USDZ saved for {model_id}: {usdz_url}")
+                return {
+                    "success": True,
+                    "model_id": model_id,
+                    "usdz_url": usdz_url,
+                    "message": "USDZ file saved successfully"
+                }
+            except Exception as e:
+                print(f"✗ Failed to upload USDZ to R2: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to save USDZ: {str(e)}"
+                )
+        else:
+            raise HTTPException(
+                status_code=503,
+                detail="R2 storage not available"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"✗ Unexpected error saving USDZ: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 MODEL_MEDIA_TYPES = {
     "obj": "text/plain",

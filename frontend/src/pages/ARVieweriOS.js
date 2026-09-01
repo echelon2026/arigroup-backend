@@ -4,6 +4,7 @@ import { useParams } from 'react-router-dom';
 // guaranteed to be registered before React ever renders it.
 import '@google/model-viewer';
 import { isInAppBrowser, supportsQuickLook } from '../utils/platformDetection';
+import { useUSDZConverter } from '../hooks/useUSDZConverter';
 import '../styles/ARVieweriOS.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -57,6 +58,7 @@ function ARVieweriOS() {
 
   const inAppBrowser = isInAppBrowser();
   const quickLookCapable = supportsQuickLook();
+  const { converting, convertError, convertGLBToUSDZ } = useUSDZConverter();
 
   const modelSrc = isBackendHosted ? `${API_URL}/model/${modelId}` : modelId;
 
@@ -172,21 +174,60 @@ function ARVieweriOS() {
     }
   };
 
-  // Requires a real tap -- see the file-level comment on why this can't be
+  // Requires a real tap -- see the file-level comment on why this can’t be
   // auto-triggered on load the way the Android viewer does.
-  const handleViewInAR = () => {
+  const handleViewInAR = async () => {
     if (inAppBrowser) {
       setArSessionMessage(
-        'AR only works in Safari. Tap the ••• menu above and choose "Open in Safari".'
+        ‘AR only works in Safari. Tap the ••• menu above and choose "Open in Safari".’
       );
       return;
     }
+
     const el = modelViewerRef.current;
+
+    // If USDZ not available, convert GLB to USDZ first
+    if (!usdzSrc) {
+      if (!isBackendHosted) {
+        setArSessionMessage(‘AR not available for external models’);
+        return;
+      }
+
+      setArSessionMessage(‘Generating AR format... This may take 30-60 seconds’);
+      try {
+        // Trigger GLB to USDZ conversion
+        const glbUrl = modelSrc;
+        await convertGLBToUSDZ(modelId, glbUrl);
+        setArSessionMessage(‘AR format ready! Starting...’);
+
+        // After conversion, the metadata will be updated with USDZ URL
+        // Re-fetch info to get updated usdz_path
+        const infoResponse = await fetch(`${API_URL}/model/${modelId}/info`);
+        if (infoResponse.ok) {
+          const updatedData = await infoResponse.json();
+          if (updatedData.usdz_available) {
+            setUsdzSrc(`${API_URL}/model/${modelId}/usdz`);
+            // Now activate AR with the converted USDZ
+            setTimeout(() => {
+              if (el && el.canActivateAR) {
+                el.activateAR();
+              }
+            }, 500);
+          }
+        }
+      } catch (err) {
+        setArSessionMessage(`Failed to generate AR format: ${err.message}`);
+        console.error(‘Conversion error:’, err);
+      }
+      return;
+    }
+
+    // USDZ already available, just activate AR
     if (el && el.canActivateAR) {
-      setArSessionMessage('');
+      setArSessionMessage(‘’);
       el.activateAR();
     } else {
-      setArSessionMessage('AR isn’t supported on this device.');
+      setArSessionMessage(‘AR isn’t supported on this device.’);
     }
   };
 
@@ -242,9 +283,9 @@ function ARVieweriOS() {
           slot="ar-button"
           className="ios-ar-button"
           onClick={handleViewInAR}
-          disabled={!canOfferAR && usdzChecked}
+          disabled={converting || (!canOfferAR && usdzChecked && !isBackendHosted)}
         >
-          View in your space
+          {converting ? 'Generating AR format...' : 'View in your space'}
         </button>
       </model-viewer>
 

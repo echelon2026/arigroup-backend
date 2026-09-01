@@ -75,6 +75,32 @@ def upload_usdz_to_r2(file_path: str, restaurant_id: str, model_id: str) -> str:
     return upload_model_to_r2(file_path, restaurant_id, model_id, "usdz")
 
 
+def upload_usdz_to_r2_bytes(usdz_bytes: bytes, restaurant_id: str, model_id: str) -> str:
+    """
+    Upload USDZ bytes (from client-side conversion) to R2.
+    Used when iOS frontend converts GLB→USDZ and uploads the result.
+
+    Returns:
+        Public URL of the uploaded USDZ file
+    """
+    if not R2_AVAILABLE:
+        raise RuntimeError("Cloudflare R2 not configured - R2 credentials required")
+
+    r2_key = f"{restaurant_id}/{model_id}.usdz"
+    r2_client.put_object(
+        Bucket=R2_BUCKET_NAME,
+        Key=r2_key,
+        Body=usdz_bytes,
+        ContentType="model/vnd.usdz+zip"
+    )
+
+    # Return public URL
+    if R2_CUSTOM_DOMAIN:
+        return f"https://{R2_CUSTOM_DOMAIN}/{r2_key}"
+    else:
+        return f"https://{R2_BUCKET_NAME}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{r2_key}"
+
+
 def get_content_type(file_ext: str) -> str:
     """Get correct content type for 3D model files"""
     content_types = {
