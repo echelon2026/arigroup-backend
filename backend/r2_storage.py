@@ -81,7 +81,7 @@ def upload_usdz_to_r2_bytes(usdz_bytes: bytes, restaurant_id: str, model_id: str
     Used when iOS frontend converts GLB→USDZ and uploads the result.
 
     Returns:
-        Public URL of the uploaded USDZ file
+        Public URL of the uploaded USDZ file (no auth required)
     """
     if not R2_AVAILABLE:
         raise RuntimeError("Cloudflare R2 not configured - R2 credentials required")
@@ -91,14 +91,22 @@ def upload_usdz_to_r2_bytes(usdz_bytes: bytes, restaurant_id: str, model_id: str
         Bucket=R2_BUCKET_NAME,
         Key=r2_key,
         Body=usdz_bytes,
-        ContentType="model/vnd.usdz+zip"
+        ContentType="model/vnd.usdz+zip",
+        # Important: ensure public access for iOS Quick Look
+        # Quick Look doesn't use browser session/auth
+        ACL="public-read"
     )
 
-    # Return public URL
+    # Use pub-{account}.r2.dev for public USDZ URLs
+    # This ensures no auth required when Quick Look fetches the file
     if R2_CUSTOM_DOMAIN:
-        return f"https://{R2_CUSTOM_DOMAIN}/{r2_key}"
+        public_url = f"https://{R2_CUSTOM_DOMAIN}/{r2_key}"
     else:
-        return f"https://{R2_BUCKET_NAME}.{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{r2_key}"
+        # Use public R2 domain instead of authenticated endpoint
+        public_url = f"https://pub-{R2_ACCOUNT_ID}.r2.dev/{r2_key}"
+
+    print(f"✓ USDZ saved to public R2: {public_url}")
+    return public_url
 
 
 def get_content_type(file_ext: str) -> str:

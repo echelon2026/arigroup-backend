@@ -200,20 +200,27 @@ function ARVieweriOS() {
         await convertGLBToUSDZ(modelId, glbUrl);
         setArSessionMessage(‘AR format ready! Starting...’);
 
-        // After conversion, the metadata will be updated with USDZ URL
-        // Re-fetch info to get updated usdz_path
+        // After conversion, fetch updated metadata to get direct R2 USDZ URL
+        // iOS Quick Look needs direct R2 URLs, not backend-routed URLs
+        // (Quick Look can't access backend URLs with CORS/auth requirements)
         const infoResponse = await fetch(`${API_URL}/model/${modelId}/info`);
         if (infoResponse.ok) {
           const updatedData = await infoResponse.json();
-          if (updatedData.usdz_available) {
-            setUsdzSrc(`${API_URL}/model/${modelId}/usdz`);
+          if (updatedData.usdz_path) {
+            // Use direct R2 URL for iOS Quick Look
+            console.log('✓ Using direct R2 USDZ URL:', updatedData.usdz_path);
+            setUsdzSrc(updatedData.usdz_path);
             // Now activate AR with the converted USDZ
             setTimeout(() => {
               if (el && el.canActivateAR) {
                 el.activateAR();
               }
             }, 500);
+          } else {
+            setArSessionMessage('USDZ conversion completed but file not saved');
           }
+        } else {
+          setArSessionMessage('Failed to fetch updated model info');
         }
       } catch (err) {
         setArSessionMessage(`Failed to generate AR format: ${err.message}`);
