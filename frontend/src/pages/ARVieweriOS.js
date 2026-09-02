@@ -3,8 +3,7 @@ import { useParams } from 'react-router-dom';
 // Bundled (not a CDN <script> tag) so the <model-viewer> custom element is
 // guaranteed to be registered before React ever renders it.
 import '@google/model-viewer';
-import { isInAppBrowser, supportsQuickLook } from '../utils/platformDetection';
-import { useUSDZConverter } from '../hooks/useUSDZConverter';
+import { isInAppBrowser } from '../utils/platformDetection';
 import '../styles/ARVieweriOS.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -52,60 +51,31 @@ function ARVieweriOS() {
   const [errorMessage, setErrorMessage] = useState('');
   const [scale, setScale] = useState(1.0);
   const [modelName, setModelName] = useState('');
-  const [usdzSrc, setUsdzSrc] = useState(null);
-  const [usdzChecked, setUsdzChecked] = useState(false);
   const [arSessionMessage, setArSessionMessage] = useState('');
 
   const inAppBrowser = isInAppBrowser();
-  const quickLookCapable = supportsQuickLook();
-  const { converting, convertError, convertGLBToUSDZ } = useUSDZConverter();
 
   const modelSrc = isBackendHosted ? `${API_URL}/model/${modelId}` : modelId;
 
-  // Resolve model metadata (scale, name) and -- critically for iOS -- the
-  // dedicated USDZ URL. A full public URL that already points at a .usdz
-  // file can be used directly; a full URL pointing at .glb has no known
-  // USDZ sibling, so AR is simply unavailable for it. Backend-hosted
-  // model IDs ask /model/{id}/info, which tells us definitively whether
-  // /model/{id}/usdz will resolve (see backend app.py) instead of firing
-  // a speculative request and hoping.
+  // Fetch model metadata (scale, name)
   useEffect(() => {
-    let cancelled = false;
+    if (!isBackendHosted) return;
 
-    const resolveUsdz = async () => {
-      if (!isBackendHosted) {
-        if (/\.usdz$/i.test(modelId)) {
-          if (!cancelled) setUsdzSrc(modelId);
-        }
-        if (!cancelled) setUsdzChecked(true);
-        return;
-      }
-
+    const fetchModelMetadata = async () => {
       try {
         const response = await fetch(`${API_URL}/model/${modelId}/info`);
         if (response.ok) {
           const data = await response.json();
-          if (cancelled) return;
-          console.log('Model info loaded:', { usdz_available: data.usdz_available, name: data.name });
           setScale(data.scale || 1.0);
           setModelName(data.name || '');
-          if (data.usdz_available) {
-            setUsdzSrc(`${API_URL}/model/${modelId}/usdz`);
-          }
-        } else {
-          console.warn(`Failed to load model info: HTTP ${response.status}`);
+          console.log('✓ Model loaded:', data.name);
         }
       } catch (err) {
         console.error('Error fetching model info:', err);
-      } finally {
-        if (!cancelled) setUsdzChecked(true);
       }
     };
 
-    resolveUsdz();
-    return () => {
-      cancelled = true;
-    };
+    fetchModelMetadata();
   }, [modelId, isBackendHosted]);
 
   const handleLoad = useCallback(() => {
@@ -144,24 +114,6 @@ function ARVieweriOS() {
     };
   }, [handleLoad, handleError, handleArStatus]);
 
-  // Set ios-src, ar, and ar-modes based on USDZ availability.
-  // React JSX doesn't handle hyphenated attributes well, so set them via DOM.
-  useEffect(() => {
-    const el = modelViewerRef.current;
-    if (!el) return;
-
-    if (usdzSrc) {
-      el.setAttribute('ios-src', usdzSrc);
-      el.setAttribute('ar', 'true');
-      el.setAttribute('ar-modes', 'quick-look');
-      console.log('✓ USDZ enabled for iOS AR Quick Look');
-    } else {
-      el.removeAttribute('ios-src');
-      el.removeAttribute('ar');
-      el.setAttribute('ar-modes', 'none');
-      console.log('⚠ USDZ not available - AR disabled, 3D preview only');
-    }
-  }, [usdzSrc]);
 
   const retry = () => {
     setErrorMessage('');
@@ -176,7 +128,7 @@ function ARVieweriOS() {
 
   // Requires a real tap -- see the file-level comment on why this can’t be
   // auto-triggered on load the way the Android viewer does.
-  const handleViewInAR = async () => {
+  const handleViewInAR = () => {
     if (inAppBrowser) {
       setArSessionMessage(
         ‘AR only works in Safari. Tap the ••• menu above and choose "Open in Safari".’
@@ -185,51 +137,6 @@ function ARVieweriOS() {
     }
 
     const el = modelViewerRef.current;
-
-    // If USDZ not available, convert GLB to USDZ first
-    if (!usdzSrc) {
-      if (!isBackendHosted) {
-        setArSessionMessage(‘AR not available for external models’);
-        return;
-      }
-
-      setArSessionMessage(‘Generating AR format... This may take 30-60 seconds’);
-      try {
-        // Trigger GLB to USDZ conversion
-        const glbUrl = modelSrc;
-        await convertGLBToUSDZ(modelId, glbUrl);
-        setArSessionMessage(‘AR format ready! Starting...’);
-
-        // After conversion, fetch updated metadata to get direct R2 USDZ URL
-        // iOS Quick Look needs direct R2 URLs, not backend-routed URLs
-        // (Quick Look can't access backend URLs with CORS/auth requirements)
-        const infoResponse = await fetch(`${API_URL}/model/${modelId}/info`);
-        if (infoResponse.ok) {
-          const updatedData = await infoResponse.json();
-          if (updatedData.usdz_path) {
-            // Use direct R2 URL for iOS Quick Look
-            console.log('✓ Using direct R2 USDZ URL:', updatedData.usdz_path);
-            setUsdzSrc(updatedData.usdz_path);
-            // Now activate AR with the converted USDZ
-            setTimeout(() => {
-              if (el && el.canActivateAR) {
-                el.activateAR();
-              }
-            }, 500);
-          } else {
-            setArSessionMessage('USDZ conversion completed but file not saved');
-          }
-        } else {
-          setArSessionMessage('Failed to fetch updated model info');
-        }
-      } catch (err) {
-        setArSessionMessage(`Failed to generate AR format: ${err.message}`);
-        console.error(‘Conversion error:’, err);
-      }
-      return;
-    }
-
-    // USDZ already available, just activate AR
     if (el && el.canActivateAR) {
       setArSessionMessage(‘’);
       el.activateAR();
@@ -260,6 +167,8 @@ function ARVieweriOS() {
         ref={modelViewerRef}
         src={modelSrc}
         alt={modelName || '3D model'}
+        ar
+        ar-modes="webxr scene-viewer"
         ar-scale="fixed"
         ar-placement="floor"
         camera-controls
@@ -290,9 +199,8 @@ function ARVieweriOS() {
           slot="ar-button"
           className="ios-ar-button"
           onClick={handleViewInAR}
-          disabled={converting || (!canOfferAR && usdzChecked && !isBackendHosted)}
         >
-          {converting ? 'Generating AR format...' : 'View in your space'}
+          View in your space
         </button>
       </model-viewer>
 
