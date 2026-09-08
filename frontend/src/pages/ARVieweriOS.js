@@ -1,43 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-// Bundled (not a CDN <script> tag) so the <model-viewer> custom element is
-// guaranteed to be registered before React ever renders it.
 import '@google/model-viewer';
 import { isInAppBrowser } from '../utils/platformDetection';
 import '../styles/ARVieweriOS.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-/**
- * iOS-specific AR viewer.
- *
- * This intentionally is NOT just ARViewerModelViewer with a different CSS
- * file. iOS's AR pipeline (AR Quick Look) differs from Android's (Scene
- * Viewer) in ways that change what "correct" model-viewer usage looks
- * like:
- *
- *  - Quick Look only accepts USDZ, never GLB, and identifies it by file
- *    extension/content-type -- so this viewer resolves a dedicated
- *    `ios-src` USDZ URL and never assumes the GLB will "just work" the
- *    way ar-modes="scene-viewer" does on Android.
- *  - Quick Look must be launched from a genuine tap. A QR-code visit has
- *    no prior user gesture, so (unlike ARViewerModelViewer, which
- *    auto-calls activateAR() the instant the model loads) this viewer
- *    always waits for an explicit "View in AR" tap.
- *  - Once Quick Look is presenting, ARKit does its own lighting
- *    estimation/shadows -- environment-image/shadow-intensity here only
- *    style the in-page 3D preview, not the AR session itself.
- *  - Quick Look is a Safari/SFSafariViewController-only feature. Most iOS
- *    AR traffic arrives via in-app browsers (Instagram/TikTok/etc. QR
- *    scans), where Apple simply does not allow Quick Look to present no
- *    matter what the page does -- so this viewer detects that case and
- *    tells the user to open in Safari instead of letting the tap silently
- *    fail.
- */
 function ARVieweriOS() {
-  // Same wildcard route shape as ARViewerModelViewer -- see that file for
-  // why this can't be a plain ":modelId" param (full model URLs contain
-  // slashes).
   const params = useParams();
   const rawModelId = params['*'] || '';
   const modelId = /^https?:\/(?!\/)/.test(rawModelId)
@@ -45,19 +14,21 @@ function ARVieweriOS() {
     : rawModelId;
 
   const modelViewerRef = useRef(null);
-  const isBackendHosted = !modelId.startsWith('http');
+  const arTriedRef = useRef(false);
 
-  const [status, setStatus] = useState('loading'); // loading | ready | error
+  const [status, setStatus] = useState('loading');
   const [errorMessage, setErrorMessage] = useState('');
   const [scale, setScale] = useState(1.0);
   const [modelName, setModelName] = useState('');
+  const [usdzUrl, setUsdzUrl] = useState(null);
   const [arSessionMessage, setArSessionMessage] = useState('');
 
   const inAppBrowser = isInAppBrowser();
+  const isBackendHosted = !modelId.startsWith('http');
 
   const modelSrc = isBackendHosted ? `${API_URL}/model/${modelId}` : modelId;
 
-  // Fetch model metadata (scale, name)
+  // Fetch model metadata including USDZ URL
   useEffect(() => {
     if (!isBackendHosted) return;
 
@@ -68,7 +39,12 @@ function ARVieweriOS() {
           const data = await response.json();
           setScale(data.scale || 1.0);
           setModelName(data.name || '');
-          console.log('✓ Model loaded:', data.name);
+          if (data.usdz_url) {
+            setUsdzUrl(data.usdz_url);
+            console.log('✓ USDZ available:', data.usdz_url);
+          } else {
+            console.log('⚠ No USDZ available for this model');
+          }
         }
       } catch (err) {
         console.error('Error fetching model info:', err);
@@ -77,6 +53,24 @@ function ARVieweriOS() {
 
     fetchModelMetadata();
   }, [modelId, isBackendHosted]);
+
+  // Set ios-src and ar attributes based on USDZ availability
+  useEffect(() => {
+    const el = modelViewerRef.current;
+    if (!el) return;
+
+    if (usdzUrl) {
+      el.setAttribute('ios-src', usdzUrl);
+      el.setAttribute('ar', 'true');
+      el.setAttribute('ar-modes', 'quick-look webxr scene-viewer');
+      console.log('✓ iOS Quick Look enabled with USDZ');
+    } else {
+      el.removeAttribute('ios-src');
+      el.setAttribute('ar', 'true');
+      el.setAttribute('ar-modes', 'webxr scene-viewer');
+      console.log('⚠ Using WebXR fallback (no USDZ)');
+    }
+  }, [usdzUrl]);
 
   const handleLoad = useCallback(() => {
     setStatus('ready');
@@ -93,7 +87,7 @@ function ARVieweriOS() {
   const handleArStatus = useCallback((event) => {
     const s = event?.detail?.status;
     if (s === 'failed') {
-      setArSessionMessage('AR could not start. Make sure you’re viewing this page in Safari.');
+      setArSessionMessage('AR could not start. Make sure you\'re viewing this page in Safari.');
     } else if (s === 'session-started') {
       setArSessionMessage('');
     }
@@ -114,7 +108,6 @@ function ARVieweriOS() {
     };
   }, [handleLoad, handleError, handleArStatus]);
 
-
   const retry = () => {
     setErrorMessage('');
     setStatus('loading');
@@ -126,22 +119,20 @@ function ARVieweriOS() {
     }
   };
 
-  // Requires a real tap -- see the file-level comment on why this can’t be
-  // auto-triggered on load the way the Android viewer does.
   const handleViewInAR = () => {
     if (inAppBrowser) {
       setArSessionMessage(
-        ‘AR only works in Safari. Tap the ••• menu above and choose "Open in Safari".’
+        'AR only works in Safari. Tap the ••• menu above and choose "Open in Safari".'
       );
       return;
     }
 
     const el = modelViewerRef.current;
     if (el && el.canActivateAR) {
-      setArSessionMessage(‘’);
+      setArSessionMessage('');
       el.activateAR();
     } else {
-      setArSessionMessage(‘AR isn’t supported on this device.’);
+      setArSessionMessage('AR isn\'t supported on this device.');
     }
   };
 
@@ -159,18 +150,12 @@ function ARVieweriOS() {
     );
   }
 
-  const canOfferAR = usdzChecked && Boolean(usdzSrc) && quickLookCapable;
-
   return (
     <div className="ar-viewer-ios">
       <model-viewer
         ref={modelViewerRef}
         src={modelSrc}
         alt={modelName || '3D model'}
-        ar
-        ar-modes="webxr scene-viewer"
-        ar-scale="fixed"
-        ar-placement="floor"
         camera-controls
         touch-action="pan-y"
         disable-pan
@@ -190,11 +175,6 @@ function ARVieweriOS() {
         reveal="auto"
         class="model-viewer-element"
       >
-        {/* Custom AR trigger: model-viewer's default AR button is
-            replaced with an app-styled one via this slot, per
-            model-viewer's supported customization API. Kept disabled
-            until we've actually confirmed a USDZ exists, so users on
-            models without one never hit a silent failure. */}
         <button
           slot="ar-button"
           className="ios-ar-button"
@@ -211,9 +191,9 @@ function ARVieweriOS() {
         </div>
       )}
 
-      {status === 'ready' && usdzChecked && !usdzSrc && (
+      {status === 'ready' && !usdzUrl && (
         <div className="ios-ar-unavailable-banner">
-          AR view isn’t available for this model on iPhone/iPad yet — you can still rotate and zoom it above.
+          3D preview available. AR requires USDZ format.
         </div>
       )}
 
@@ -221,9 +201,9 @@ function ARVieweriOS() {
         <div className="ios-ar-session-banner">{arSessionMessage}</div>
       )}
 
-      {inAppBrowser && status === 'ready' && usdzSrc && (
+      {inAppBrowser && status === 'ready' && usdzUrl && (
         <div className="ios-in-app-banner">
-          For AR, open this link in Safari.
+          For best AR experience, open in Safari.
         </div>
       )}
 

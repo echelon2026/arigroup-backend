@@ -418,26 +418,20 @@ async def get_model_info(model_id: str):
     (e.g. the cube) show up oversized in AR regardless of what scale was
     set at upload time."""
     model = get_model_or_404(model_id)
-    return {
+    response = {
         "id": model["id"],
         "name": model.get("name"),
         "file_type": model.get("file_type"),
         "scale": model.get("scale", 1.0),
-        # Explicit per-variant R2 URLs, persisted at upload time (see
-        # /models/upload) - None when that variant isn't available for this
-        # model (e.g. an OBJ upload has neither, an old model uploaded
-        # before this field existed has no usdz_path).
         "glb_path": model.get("glb_path"),
         "usdz_path": model.get("usdz_path"),
-        # The iOS AR viewer needs to know, before it tries anything, whether
-        # a USDZ (the only format AR Quick Look accepts) actually exists for
-        # this model.
         "usdz_available": bool(model.get("usdz_path")),
-        # Relative path to this model's QR code PNG (GET /qr/{model_id}),
-        # pointing at its public AR viewer URL. Relative so callers combine
-        # it with whatever base URL they're already using for this API.
         "qr_code_url": f"/qr/{model_id}",
     }
+    # Include USDZ URL for iOS AR viewer if available
+    if model.get("usdz_path"):
+        response["usdz_url"] = model.get("usdz_path")
+    return response
 
 @app.get("/model/{model_id}/usdz")
 async def get_model_usdz(model_id: str):
