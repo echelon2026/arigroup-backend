@@ -7,8 +7,7 @@ function Login({ setIsLoggedIn }) {
   const [error, setError] = useState('');
   const navigate = useNavigate();
 
-  // Simple PIN authentication (change this to your preferred PIN)
-  const ADMIN_PIN = '1234';
+  const ADMIN_PIN = process.env.REACT_APP_ADMIN_PIN || 'arigroup2026';
 
   const handleLogin = (e) => {
     e.preventDefault();
@@ -45,7 +44,6 @@ function Login({ setIsLoggedIn }) {
           <button type="submit">Login</button>
         </form>
 
-        <p className="hint">Demo PIN: 1234</p>
       </div>
     </div>
   );
