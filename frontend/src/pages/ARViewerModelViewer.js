@@ -58,9 +58,10 @@ function ARViewerModelViewer() {
     const mv = modelViewerRef.current;
     if (!mv || !scriptLoaded || !infoReady) return;
 
-    // Set ios-src directly on the element when USDZ is available
-    if (modelInfo?.has_ios) {
-      mv.setAttribute('ios-src', `${API_URL}/model-ios/${modelId}`);
+    // Use direct R2 CDN URLs when available; fall back to API proxy
+    const iosUrl = modelInfo?.ios_url;
+    if (iosUrl) {
+      mv.setAttribute('ios-src', iosUrl);
     } else {
       mv.removeAttribute('ios-src');
     }
@@ -100,7 +101,8 @@ function ARViewerModelViewer() {
     };
   }, [scriptLoaded, infoReady, modelInfo, isIOS, modelId]);
 
-  const modelSrc = `${API_URL}/model/${modelId}`;
+  // Use direct R2 CDN URL when available; API proxy as fallback
+  const modelSrc = modelInfo?.model_url || `${API_URL}/model/${modelId}`;
 
   // Wait for both script and model-info before rendering model-viewer
   // so that ios-src is correct from the start (Quick Look needs it at render time)

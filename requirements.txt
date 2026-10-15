@@ -4,6 +4,6 @@ python-dotenv
 pydantic
 qrcode
 pillow
-supabase
 python-multipart
 requests
+boto3
