@@ -58,7 +58,6 @@ function ARViewerModelViewer() {
     const mv = modelViewerRef.current;
     if (!mv || !scriptLoaded || !infoReady) return;
 
-    // Use direct R2 CDN URLs when available; fall back to API proxy
     const iosUrl = modelInfo?.ios_url;
     if (iosUrl) {
       mv.setAttribute('ios-src', iosUrl);
@@ -101,7 +100,6 @@ function ARViewerModelViewer() {
     };
   }, [scriptLoaded, infoReady, modelInfo, isIOS, modelId]);
 
-  // Use direct R2 CDN URL when available; API proxy as fallback
   const modelSrc = modelInfo?.model_url || `${API_URL}/model/${modelId}`;
 
   // Wait for both script and model-info before rendering model-viewer

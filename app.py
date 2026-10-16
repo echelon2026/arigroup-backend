@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, FileResponse
+from fastapi.responses import FileResponse, Response
 import os
 from dotenv import load_dotenv
 import qrcode
@@ -33,19 +33,26 @@ except Exception as _e:
     r2 = None
     print(f"R2 not available: {_e}")
 
-def _r2_url(key: str) -> str:
-    if _R2_DOMAIN:
-        return f"https://{_R2_DOMAIN}/{key}"
-    return f"https://{_R2_ACCOUNT}.r2.cloudflarestorage.com/{_R2_BUCKET}/{key}"
+def _r2_upload(key: str, data: bytes, content_type: str) -> bool:
+    """Upload to R2; returns True on success."""
+    if not r2:
+        return False
+    try:
+        r2.put_object(Bucket=_R2_BUCKET, Key=key, Body=data, ContentType=content_type)
+        return True
+    except Exception as e:
+        print(f"R2 upload error for {key}: {e}")
+        return False
 
-def _r2_upload(key: str, data: bytes, content_type: str) -> str | None:
+def _r2_fetch(key: str) -> bytes | None:
+    """Download from R2; returns bytes or None."""
     if not r2:
         return None
     try:
-        r2.put_object(Bucket=_R2_BUCKET, Key=key, Body=data, ContentType=content_type)
-        return _r2_url(key)
+        resp = r2.get_object(Bucket=_R2_BUCKET, Key=key)
+        return resp["Body"].read()
     except Exception as e:
-        print(f"R2 upload error for {key}: {e}")
+        print(f"R2 fetch error for {key}: {e}")
         return None
 
 def _r2_save_meta(data: dict):
@@ -214,23 +221,20 @@ async def upload_model(
     with open(file_path, 'wb') as f:
         f.write(content)
 
-    # Upload main model to R2 for persistent, CDN-served storage
-    r2_key = f"models/{restaurant_id}/{model_id}.{file_ext}"
+    # Upload to R2 (persistent storage); files also kept locally as hot-path cache
     _ct_map = {"glb": "model/gltf-binary", "gltf": "model/gltf+json", "obj": "text/plain"}
-    r2_url = _r2_upload(r2_key, content, _ct_map.get(file_ext, "application/octet-stream"))
+    r2_key = f"models/{restaurant_id}/{model_id}.{file_ext}"
+    _r2_upload(r2_key, content, _ct_map.get(file_ext, "application/octet-stream"))
 
     usdz_path = None
-    r2_usdz_url = None
+    r2_usdz_key = None
     if ios_file and ios_file.filename:
         usdz_content = await ios_file.read()
         usdz_path = f"{UPLOAD_DIR}/{restaurant_id}/{model_id}.usdz"
         with open(usdz_path, 'wb') as f:
             f.write(usdz_content)
-        r2_usdz_url = _r2_upload(
-            f"models/{restaurant_id}/{model_id}.usdz",
-            usdz_content,
-            "model/vnd.usdz+zip"
-        )
+        r2_usdz_key = f"models/{restaurant_id}/{model_id}.usdz"
+        _r2_upload(r2_usdz_key, usdz_content, "model/vnd.usdz+zip")
 
     model_data = {
         "id": model_id,
@@ -243,22 +247,19 @@ async def upload_model(
         "scale": scale,
         "usdz_path": usdz_path,
         "has_ios": (usdz_path is not None),
-        # R2 public URLs — used by model-viewer directly (CDN, no Render proxy)
-        "r2_url": r2_url,
-        "r2_usdz_url": r2_usdz_url,
+        "r2_key": r2_key,          # R2 object key for the main model
+        "r2_usdz_key": r2_usdz_key, # R2 object key for USDZ (or None)
         "created_at": datetime.utcnow().isoformat()
     }
 
     models_db[model_id] = model_data
     _save_json(MODELS_JSON, models_db)
-    _r2_save_meta(models_db)  # durable copy in R2
+    _r2_save_meta(models_db)
 
     return {
         "id": model_id,
         "message": "Model uploaded successfully",
         "has_ios": usdz_path is not None,
-        "model_url": r2_url,
-        "ios_url": r2_usdz_url,
     }
 
 @app.get("/models/{restaurant_id}")
@@ -329,19 +330,30 @@ async def get_model_file(model_id: str):
         raise HTTPException(status_code=404, detail="Model not found")
 
     model = models_db[model_id]
-
-    # Prefer CDN redirect — faster and survives Render restarts
-    if model.get("r2_url"):
-        return RedirectResponse(url=model["r2_url"], status_code=302)
-
-    file_path = model["file_path"]
     file_type = model["file_type"].lower()
-
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Model file not found on disk; upload again")
-
     media_types = {"obj": "text/plain", "gltf": "model/gltf+json", "glb": "model/gltf-binary"}
-    return FileResponse(file_path, media_type=media_types.get(file_type, "application/octet-stream"))
+    ct = media_types.get(file_type, "application/octet-stream")
+
+    # 1. Try local disk (fast path — file may still exist in this container session)
+    file_path = model.get("file_path", "")
+    if file_path and os.path.exists(file_path):
+        return FileResponse(file_path, media_type=ct)
+
+    # 2. Fetch from R2 and stream (survives Render restarts)
+    r2_key = model.get("r2_key")
+    if r2_key:
+        data = _r2_fetch(r2_key)
+        if data:
+            # Re-cache locally for subsequent requests
+            try:
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                with open(file_path, "wb") as fh:
+                    fh.write(data)
+            except Exception:
+                pass
+            return Response(content=data, media_type=ct)
+
+    raise HTTPException(status_code=404, detail="Model file unavailable; please re-upload")
 
 @app.get("/model-ios/{model_id}")
 async def get_model_ios(model_id: str):
@@ -350,14 +362,24 @@ async def get_model_ios(model_id: str):
 
     model = models_db[model_id]
 
-    if model.get("r2_usdz_url"):
-        return RedirectResponse(url=model["r2_usdz_url"], status_code=302)
+    usdz_path = model.get("usdz_path", "")
+    if usdz_path and os.path.exists(usdz_path):
+        return FileResponse(usdz_path, media_type="model/vnd.usdz+zip", filename=f"{model_id}.usdz")
 
-    usdz_path = model.get("usdz_path")
-    if not usdz_path or not os.path.exists(usdz_path):
-        raise HTTPException(status_code=404, detail="iOS USDZ model not available")
+    r2_usdz_key = model.get("r2_usdz_key")
+    if r2_usdz_key:
+        data = _r2_fetch(r2_usdz_key)
+        if data:
+            try:
+                os.makedirs(os.path.dirname(usdz_path), exist_ok=True)
+                with open(usdz_path, "wb") as fh:
+                    fh.write(data)
+            except Exception:
+                pass
+            return Response(content=data, media_type="model/vnd.usdz+zip",
+                            headers={"Content-Disposition": f'attachment; filename="{model_id}.usdz"'})
 
-    return FileResponse(usdz_path, media_type="model/vnd.usdz+zip", filename=f"{model_id}.usdz")
+    raise HTTPException(status_code=404, detail="iOS USDZ model not available")
 
 @app.get("/model-info/{model_id}")
 async def get_model_info(model_id: str):
@@ -365,13 +387,7 @@ async def get_model_info(model_id: str):
         raise HTTPException(status_code=404, detail="Model not found")
 
     model = models_db[model_id]
-
-    # Build the best available public URL for each format
     api_base = os.getenv("API_URL", "https://arigroup-api.onrender.com")
-    model_url = model.get("r2_url") or f"{api_base}/model/{model_id}"
-    ios_url = model.get("r2_usdz_url") or (
-        f"{api_base}/model-ios/{model_id}" if model.get("has_ios") else None
-    )
 
     return {
         "id": model["id"],
@@ -380,8 +396,9 @@ async def get_model_info(model_id: str):
         "file_type": model["file_type"],
         "scale": model.get("scale", 1.0),
         "has_ios": model.get("has_ios", False),
-        "model_url": model_url,
-        "ios_url": ios_url,
+        # Always the Render API URL — backend proxies from R2 transparently
+        "model_url": f"{api_base}/model/{model_id}",
+        "ios_url": f"{api_base}/model-ios/{model_id}" if model.get("has_ios") else None,
         "created_at": model["created_at"]
     }
 
