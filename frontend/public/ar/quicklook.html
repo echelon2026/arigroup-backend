@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AR – Quick Look</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0a; color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; text-align: center; padding: 24px;
+    }
+    .card { max-width: 360px; }
+    .badge {
+      display: inline-block; background: #555; color: #fff;
+      font-size: 11px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; padding: 4px 10px; border-radius: 4px; margin-bottom: 20px;
+    }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 10px; }
+    p { font-size: 14px; color: #aaa; line-height: 1.6; margin-bottom: 24px; }
+    /* AR Quick Look activates when the user taps a link with rel="ar" */
+    a.ar-btn {
+      display: block; background: #555; color: #fff;
+      font-size: 15px; font-weight: 600; padding: 14px 28px;
+      border-radius: 10px; text-decoration: none;
+    }
+    a.ar-btn img { display: none; } /* required child for Quick Look */
+    .label { font-size: 11px; color: #555; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">Method 2 — AR Quick Look</div>
+    <h1>Apple AR Quick Look</h1>
+    <p id="msg">Tap the button to view in AR.</p>
+
+    <!-- rel="ar" triggers iOS AR Quick Look on tap -->
+    <a class="ar-btn" id="ql-link"
+       href="https://modelviewer.dev/shared-assets/models/Astronaut.usdz"
+       rel="ar">
+      <img src="" alt="" />
+      View in AR
+    </a>
+
+    <p class="label">iOS only · Uses Apple AR Quick Look (USDZ)</p>
+  </div>
+
+  <script>
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    window.addEventListener('DOMContentLoaded', () => {
+      if (!isIOS) {
+        document.getElementById('msg').textContent = 'AR Quick Look is iOS-only. Try another method on this device.';
+        const btn = document.getElementById('ql-link');
+        btn.style.opacity = '0.4';
+        btn.style.pointerEvents = 'none';
+      }
+    });
+  </script>
+</body>
+</html>

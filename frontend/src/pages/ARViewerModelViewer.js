@@ -1,22 +1,34 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useLocation } from 'react-router-dom';
 import '../styles/ARViewerModelViewer.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const DEMO_MODEL_URL = 'https://arigroup-web.vercel.app/models/astronaut.glb';
+const DEMO_IOS_URL = 'https://modelviewer.dev/shared-assets/models/Astronaut.usdz';
 
 function ARViewerModelViewer() {
   const { modelId } = useParams();
+  const location = useLocation();
+  const directSrc = new URLSearchParams(location.search).get('src');
   const modelViewerRef = useRef(null);
   const [status, setStatus] = useState('Loading 3D model...');
   const [modelError, setModelError] = useState(false);
   const [modelInfo, setModelInfo] = useState(null);
-  const [infoReady, setInfoReady] = useState(false); // true once fetch settles
+  const [infoReady, setInfoReady] = useState(false);
   const [scriptLoaded, setScriptLoaded] = useState(false);
 
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  const isAndroid = /Android/i.test(navigator.userAgent);
 
-  // Fetch model metadata
+  // If a direct src URL or demo ID is provided, skip backend fetch
+  const isDemo = modelId === 'demo' || !!directSrc;
+
+  // Fetch model metadata (skipped for demo/direct-src)
   useEffect(() => {
+    if (isDemo) {
+      setInfoReady(true);
+      return;
+    }
     fetch(`${API_URL}/model-info/${modelId}`)
       .then(r => r.ok ? r.json() : null)
       .then(info => {
@@ -32,7 +44,7 @@ function ARViewerModelViewer() {
         setModelError(true);
         setStatus('Failed to load model info');
       });
-  }, [modelId]);
+  }, [modelId, isDemo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load model-viewer script once
   useEffect(() => {
@@ -52,13 +64,31 @@ function ARViewerModelViewer() {
     document.head.appendChild(script);
   }, []);
 
+  // On Android, redirect straight to Scene Viewer via intent URL.
+  // ?noredirect=1 on the fallback URL prevents an infinite loop when Scene Viewer
+  // can't load the model and bounces the user back to this page.
+  useEffect(() => {
+    if (!isAndroid || !infoReady) return;
+    // If we were bounced back from a failed Scene Viewer launch, don't loop.
+    if (new URLSearchParams(window.location.search).get('noredirect')) return;
+    const src = directSrc || (isDemo ? DEMO_MODEL_URL : (modelInfo?.model_url || `${API_URL}/model/${modelId}`));
+    const file = encodeURIComponent(src);
+    const fallbackBase = window.location.href.split('?')[0];
+    const fallback = encodeURIComponent(`${fallbackBase}?noredirect=1`);
+    setStatus('Launching AR...');
+    window.location.href =
+      `intent://arvr.google.com/scene-viewer/1.0?file=${file}&mode=ar_only&resizable=false` +
+      `#Intent;scheme=https;package=com.google.ar.core;action=android.intent.action.VIEW;` +
+      `S.browser_fallback_url=${fallback};end;`;
+  }, [infoReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Wire up model-viewer events and set ios-src via ref (React doesn't reliably
   // update custom-element attributes, so we use setAttribute directly)
   useEffect(() => {
     const mv = modelViewerRef.current;
     if (!mv || !scriptLoaded || !infoReady) return;
 
-    const iosUrl = modelInfo?.ios_url;
+    const iosUrl = isDemo ? DEMO_IOS_URL : modelInfo?.ios_url;
     if (iosUrl) {
       mv.setAttribute('ios-src', iosUrl);
     } else {
@@ -67,11 +97,11 @@ function ARViewerModelViewer() {
 
     const onLoad = () => {
       if (isIOS) {
-        setStatus(modelInfo?.has_ios
-          ? 'Tap the AR button to view in your space'
+        setStatus(isDemo || modelInfo?.has_ios
+          ? 'Tap the AR button below to view in your space'
           : '3D preview — upload a USDZ file to enable iOS AR'
         );
-      } else {
+      } else if (!isAndroid) {
         setStatus('Tap the AR button to place in your space');
       }
     };
@@ -85,7 +115,7 @@ function ARViewerModelViewer() {
     const onArStatus = (e) => {
       const s = e.detail?.status;
       if (s === 'session-started') setStatus('AR active — point at a flat surface');
-      else if (s === 'not-presenting') setStatus('Tap the AR button to view in your space');
+      else if (s === 'not-presenting') setStatus(isIOS ? 'Tap the AR button below to view in your space' : 'Tap the AR button to place in your space');
       else if (s === 'failed') setStatus('AR not supported on this device/browser');
     };
 
@@ -98,9 +128,9 @@ function ARViewerModelViewer() {
       mv.removeEventListener('error', onError);
       mv.removeEventListener('ar-status', onArStatus);
     };
-  }, [scriptLoaded, infoReady, modelInfo, isIOS, modelId]);
+  }, [scriptLoaded, infoReady, modelInfo, isIOS, isAndroid, modelId, isDemo]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const modelSrc = modelInfo?.model_url || `${API_URL}/model/${modelId}`;
+  const modelSrc = directSrc || (isDemo ? DEMO_MODEL_URL : (modelInfo?.model_url || `${API_URL}/model/${modelId}`));
 
   // Wait for both script and model-info before rendering model-viewer
   // so that ios-src is correct from the start (Quick Look needs it at render time)

@@ -112,10 +112,14 @@ async def upload_model(
     name: str = Form(...),
     description: str = Form(None),
     scale: float = Form(1.0),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    ios_file: UploadFile = File(None)
 ):
     if not file.filename.lower().endswith(('.obj', '.gltf', '.glb')):
-        raise HTTPException(status_code=400, detail="Only OBJ, glTF, and GLB files allowed")
+        raise HTTPException(status_code=400, detail="Only OBJ, glTF, and GLB files allowed for the main model")
+
+    if ios_file and ios_file.filename and not ios_file.filename.lower().endswith('.usdz'):
+        raise HTTPException(status_code=400, detail="iOS model must be a .usdz file")
 
     if restaurant_id not in restaurants_db:
         raise HTTPException(status_code=404, detail="Restaurant not found")
@@ -123,7 +127,6 @@ async def upload_model(
     model_id = str(uuid.uuid4())
     file_ext = file.filename.split('.')[-1].lower()
 
-    # Save file locally
     os.makedirs(f"{UPLOAD_DIR}/{restaurant_id}", exist_ok=True)
     file_path = f"{UPLOAD_DIR}/{restaurant_id}/{model_id}.{file_ext}"
 
@@ -131,7 +134,13 @@ async def upload_model(
     with open(file_path, 'wb') as f:
         f.write(content)
 
-    # Save metadata
+    usdz_path = None
+    if ios_file and ios_file.filename:
+        usdz_content = await ios_file.read()
+        usdz_path = f"{UPLOAD_DIR}/{restaurant_id}/{model_id}.usdz"
+        with open(usdz_path, 'wb') as f:
+            f.write(usdz_content)
+
     model_data = {
         "id": model_id,
         "restaurant_id": restaurant_id,
@@ -141,6 +150,8 @@ async def upload_model(
         "file_type": file_ext,
         "file_size": len(content),
         "scale": scale,
+        "usdz_path": usdz_path,
+        "has_ios": usdz_path is not None,
         "created_at": datetime.utcnow().isoformat()
     }
 
@@ -149,12 +160,27 @@ async def upload_model(
     return {
         "id": model_id,
         "message": "Model uploaded successfully",
-        "file_path": file_path
+        "file_path": file_path,
+        "has_ios": usdz_path is not None
     }
 
 @app.get("/models/{restaurant_id}")
 async def list_models(restaurant_id: str):
-    return [m for m in models_db.values() if m["restaurant_id"] == restaurant_id]
+    models = [m for m in models_db.values() if m["restaurant_id"] == restaurant_id]
+    return [
+        {
+            "id": m["id"],
+            "restaurant_id": m["restaurant_id"],
+            "name": m["name"],
+            "description": m.get("description", ""),
+            "file_type": m["file_type"],
+            "file_size": m.get("file_size", 0),
+            "scale": m.get("scale", 1.0),
+            "has_ios": m.get("has_ios", False),
+            "created_at": m["created_at"]
+        }
+        for m in models
+    ]
 
 @app.post("/qr/{model_id}")
 async def generate_qr(model_id: str):
@@ -212,17 +238,45 @@ async def get_model_file(model_id: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Model file not found")
 
-    # Map file types to correct media types
     media_types = {
         "obj": "text/plain",
         "gltf": "application/json",
-        "glb": "application/octet-stream"
+        "glb": "model/gltf-binary"
     }
     media_type = media_types.get(file_type, "application/octet-stream")
 
-    # Return the file directly
     from fastapi.responses import FileResponse
     return FileResponse(file_path, media_type=media_type)
+
+@app.get("/model-ios/{model_id}")
+async def get_model_ios(model_id: str):
+    if model_id not in models_db:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    model = models_db[model_id]
+    usdz_path = model.get("usdz_path")
+
+    if not usdz_path or not os.path.exists(usdz_path):
+        raise HTTPException(status_code=404, detail="iOS USDZ model not available")
+
+    from fastapi.responses import FileResponse
+    return FileResponse(usdz_path, media_type="model/vnd.usdz+zip", filename=f"{model_id}.usdz")
+
+@app.get("/model-info/{model_id}")
+async def get_model_info(model_id: str):
+    if model_id not in models_db:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    model = models_db[model_id]
+    return {
+        "id": model["id"],
+        "name": model["name"],
+        "description": model.get("description", ""),
+        "file_type": model["file_type"],
+        "scale": model.get("scale", 1.0),
+        "has_ios": model.get("has_ios", False),
+        "created_at": model["created_at"]
+    }
 
 if __name__ == "__main__":
     import uvicorn

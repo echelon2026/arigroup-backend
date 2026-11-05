@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AR – Scene Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0a;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; text-align: center; padding: 24px;
+    }
+    .card { max-width: 360px; }
+    .badge {
+      display: inline-block; background: #1a73e8; color: #fff;
+      font-size: 11px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; padding: 4px 10px; border-radius: 4px; margin-bottom: 20px;
+    }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 10px; }
+    p { font-size: 14px; color: #aaa; line-height: 1.6; margin-bottom: 24px; }
+    .btn {
+      display: inline-block; background: #1a73e8; color: #fff;
+      font-size: 15px; font-weight: 600; padding: 14px 28px;
+      border-radius: 10px; text-decoration: none; cursor: pointer;
+      border: none; width: 100%;
+    }
+    .label { font-size: 11px; color: #555; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">Method 1 — Scene Viewer</div>
+    <h1>Google Scene Viewer</h1>
+    <p id="msg">Detecting device…</p>
+    <button class="btn" id="btn" onclick="launch()">Launch AR</button>
+    <p class="label">Android only · Uses Google Play Services AR</p>
+  </div>
+
+  <script>
+    const MODEL_URL = 'https://arigroup-web.vercel.app/models/astronaut.glb';
+    const isAndroid = /Android/i.test(navigator.userAgent);
+
+    function intentUrl() {
+      const file = encodeURIComponent(MODEL_URL);
+      const fallback = encodeURIComponent('https://arigroup-web.vercel.app/ar/scene-viewer.html?norelaunch=1');
+      return (
+        'intent://arvr.google.com/scene-viewer/1.0?file=' + file +
+        '&mode=ar_only&resizable=false' +
+        '#Intent;scheme=https;package=com.google.ar.core;action=android.intent.action.VIEW;' +
+        'S.browser_fallback_url=' + fallback + ';end;'
+      );
+    }
+
+    function launch() {
+      window.location.href = intentUrl();
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const norelaunch = new URLSearchParams(location.search).get('norelaunch');
+      if (!isAndroid) {
+        document.getElementById('msg').textContent = 'Scene Viewer is Android-only. Try another method on this device.';
+        document.getElementById('btn').disabled = true;
+        document.getElementById('btn').style.opacity = '0.4';
+        return;
+      }
+      if (norelaunch) {
+        document.getElementById('msg').textContent = 'Scene Viewer closed — ARCore may need installing or the model failed to load.';
+        return;
+      }
+      document.getElementById('msg').textContent = 'Launching Scene Viewer now…';
+      launch();
+    });
+  </script>
+</body>
+</html>

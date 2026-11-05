@@ -26,7 +26,8 @@ function AdminDashboard({ setIsLoggedIn }) {
     name: '',
     description: '',
     scale: 1.0,
-    file: null
+    file: null,
+    iosFile: null
   });
 
   const [qrCode, setQrCode] = useState(null);
@@ -112,6 +113,9 @@ function AdminDashboard({ setIsLoggedIn }) {
       formData.append('description', productForm.description);
       formData.append('scale', productForm.scale);
       formData.append('file', productForm.file);
+      if (productForm.iosFile) {
+        formData.append('ios_file', productForm.iosFile);
+      }
 
       console.log('🚀 Uploading:', productForm.name, 'to restaurant:', selectedRestaurant.id);
       const response = await axios.post(`${API_URL}/models/upload`, formData, {
@@ -131,7 +135,7 @@ function AdminDashboard({ setIsLoggedIn }) {
         productName: productForm.name
       });
 
-      setProductForm({ name: '', description: '', scale: 1.0, file: null });
+      setProductForm({ name: '', description: '', scale: 1.0, file: null, iosFile: null });
       loadProducts(selectedRestaurant.id);
     } catch (error) {
       console.error('❌ Upload failed:', error.message);
@@ -260,12 +264,27 @@ function AdminDashboard({ setIsLoggedIn }) {
                 value={productForm.scale}
                 onChange={(e) => setProductForm({...productForm, scale: parseFloat(e.target.value)})}
               />
-              <input
-                type="file"
-                accept=".obj,.gltf,.glb"
-                onChange={(e) => setProductForm({...productForm, file: e.target.files[0]})}
-                required
-              />
+              <div>
+                <label style={{display:'block',marginBottom:'4px',fontWeight:600,fontSize:'13px'}}>
+                  3D Model — Android &amp; desktop (.glb / .gltf / .obj) *
+                </label>
+                <input
+                  type="file"
+                  accept=".obj,.gltf,.glb"
+                  onChange={(e) => setProductForm({...productForm, file: e.target.files[0]})}
+                  required
+                />
+              </div>
+              <div>
+                <label style={{display:'block',marginBottom:'4px',fontWeight:600,fontSize:'13px'}}>
+                  iOS AR model (.usdz) — optional, enables AR on iPhone/iPad
+                </label>
+                <input
+                  type="file"
+                  accept=".usdz"
+                  onChange={(e) => setProductForm({...productForm, iosFile: e.target.files[0] || null})}
+                />
+              </div>
               <button type="submit" disabled={loading}>Upload & Generate QR</button>
             </form>
 
@@ -278,7 +297,7 @@ function AdminDashboard({ setIsLoggedIn }) {
                   <div key={product.id} className="product-card">
                     <h3>{product.name}</h3>
                     <p>{product.description}</p>
-                    <p className="type">Format: {product.file_type.toUpperCase()}</p>
+                    <p className="type">Format: {product.file_type.toUpperCase()}{product.has_ios ? ' + USDZ (iOS)' : ''}</p>
                     <p className="id">ID: {product.id.slice(0, 8)}...</p>
                     <button
                       onClick={() => {
