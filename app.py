@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, HTMLResponse
 import os
 from dotenv import load_dotenv
 import qrcode
@@ -161,6 +161,104 @@ async def startup_event():
 @app.get("/")
 def read_root():
     return {"message": "ARIGroup API", "version": "1.0.0"}
+
+@app.get("/ar-test", response_class=HTMLResponse)
+def ar_test():
+    """Step 2 test page: camera feed + Three.js GLB render. No AR Core needed."""
+    return """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+<title>ARIGroup AR Test</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000}
+#cam{position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:0}
+#cvs{position:fixed;top:0;left:0;width:100%;height:100%;z-index:1;pointer-events:none}
+#status{
+  position:fixed;bottom:40px;left:50%;transform:translateX(-50%);
+  background:rgba(0,0,0,0.7);color:#fff;
+  font-family:-apple-system,sans-serif;font-size:14px;font-weight:600;
+  padding:10px 24px;border-radius:20px;white-space:nowrap;z-index:5;
+}
+#log{
+  position:fixed;top:12px;left:12px;right:12px;
+  background:rgba(0,0,0,0.75);color:#0f0;
+  font-family:monospace;font-size:11px;
+  padding:10px;border-radius:8px;z-index:10;
+  max-height:140px;overflow-y:auto;pointer-events:none;
+}
+</style>
+</head>
+<body>
+<video id="cam" autoplay playsinline muted></video>
+<canvas id="cvs"></canvas>
+<div id="status">Starting camera...</div>
+<div id="log"></div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.137.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.137.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+var LOG=document.getElementById('log');
+var ST=document.getElementById('status');
+function log(msg,col){
+  var d=document.createElement('div');
+  d.style.color=col||'#0f0';
+  d.textContent='['+new Date().toLocaleTimeString()+'] '+msg;
+  LOG.appendChild(d);LOG.scrollTop=LOG.scrollHeight;
+}
+function st(msg){ST.textContent=msg;}
+
+// 1. Camera
+navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false})
+.then(function(stream){
+  var v=document.getElementById('cam');
+  v.srcObject=stream;v.play();
+  log('Camera OK');st('Camera OK - loading model...');
+}).catch(function(e){log('Camera FAIL: '+e.message,'#f00');st('Camera error');});
+
+// 2. Three.js
+var canvas=document.getElementById('cvs');
+var renderer=new THREE.WebGLRenderer({canvas:canvas,alpha:true,antialias:true});
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.setClearColor(0x000000,0);
+var scene=new THREE.Scene();
+var camera=new THREE.PerspectiveCamera(70,window.innerWidth/window.innerHeight,0.01,50);
+camera.position.set(0,0,3);
+scene.add(new THREE.HemisphereLight(0xffffff,0x444444,2));
+var sun=new THREE.DirectionalLight(0xffffff,1.5);sun.position.set(2,4,3);scene.add(sun);
+window.addEventListener('resize',function(){
+  camera.aspect=window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth,window.innerHeight);
+});
+
+// 3. Load model
+var params=new URLSearchParams(location.search);
+var modelUrl=params.get('model')||'https://arigroup-web.vercel.app/models/astronaut.glb';
+log('Loading: '+modelUrl.split('/').pop());
+
+var loader=new THREE.GLTFLoader();
+loader.load(modelUrl,function(gltf){
+  log('Model loaded OK');st('Model loaded - spinning');
+  var model=gltf.scene;
+  var box=new THREE.Box3().setFromObject(model);
+  var sz=box.getSize(new THREE.Vector3());
+  var mx=Math.max(sz.x,sz.y,sz.z);
+  if(mx>0)model.scale.setScalar(1/mx);
+  var c=box.getCenter(new THREE.Vector3());
+  model.position.sub(c.multiplyScalar(1/mx));
+  scene.add(model);
+  (function animate(){requestAnimationFrame(animate);model.rotation.y+=0.012;renderer.render(scene,camera);})();
+},function(xhr){
+  if(xhr.total>0){var p=Math.round(xhr.loaded/xhr.total*100);st('Loading... '+p+'%');log('Progress: '+p+'%');}
+},function(err){
+  log('Model FAIL: '+(err.message||String(err)),'#f00');st('Model failed');
+});
+</script>
+</body>
+</html>"""
 
 @app.post("/restaurants")
 async def create_restaurant(
