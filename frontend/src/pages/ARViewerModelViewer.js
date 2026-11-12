@@ -77,8 +77,8 @@ function ARViewerModelViewer() {
     const fallback = encodeURIComponent(`${fallbackBase}?noredirect=1`);
     setStatus('Launching AR...');
     window.location.href =
-      `intent://arvr.google.com/scene-viewer/1.0?file=${file}&mode=ar_only&resizable=false` +
-      `#Intent;scheme=https;package=com.google.ar.core;action=android.intent.action.VIEW;` +
+      `intent://arvr.google.com/scene-viewer/1.0?file=${file}&mode=ar_preferred&resizable=false` +
+      `#Intent;scheme=https;package=com.google.android.googlequicksearchbox;action=android.intent.action.VIEW;` +
       `S.browser_fallback_url=${fallback};end;`;
   }, [infoReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
