@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>ARIGroup Android AR Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0a; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+
+    #video {
+      position: fixed; top: 0; left: 0;
+      width: 100%; height: 100%;
+      object-fit: cover; z-index: 0;
+    }
+    #canvas {
+      position: fixed; top: 0; left: 0;
+      width: 100%; height: 100%; z-index: 1;
+    }
+
+    #crosshair {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 24px; height: 24px; z-index: 5;
+      pointer-events: none; display: none;
+    }
+    #crosshair::before, #crosshair::after {
+      content: ''; position: absolute; background: rgba(255,255,255,0.4); border-radius: 1px;
+    }
+    #crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+    #crosshair::after  { width: 100%; height: 2px; top: 50%; transform: translateY(-50%); }
+
+    #badge-noarcore {
+      position: fixed; top: 18px; left: 16px; z-index: 10;
+      background: rgba(13,32,22,0.92); color: #22c55e;
+      font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+      padding: 5px 12px; border-radius: 20px; border: 1px solid rgba(34,197,94,0.3);
+      pointer-events: none;
+    }
+    #badge-noarcore.arcore {
+      background: rgba(10,20,40,0.92); color: #60a5fa;
+      border-color: rgba(96,165,250,0.35);
+    }
+    #badge-tracking {
+      position: fixed; top: 18px; right: 16px; z-index: 10;
+      font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+      padding: 5px 12px; border-radius: 20px;
+      pointer-events: none; display: none;
+    }
+    #badge-tracking.on {
+      display: block; color: #a78bfa;
+      background: rgba(20,10,40,0.88); border: 1px solid rgba(124,58,237,0.35);
+    }
+    #badge-tracking.off {
+      display: block; color: #888;
+      background: rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    #status {
+      position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,.72); color: #fff;
+      padding: 10px 22px; border-radius: 24px; font-size: 14px; font-weight: 500;
+      white-space: nowrap; z-index: 10; pointer-events: none;
+      backdrop-filter: blur(10px); display: none;
+    }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    #tap-hint {
+      position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+      color: rgba(255,255,255,0.85); font-size: 15px; font-weight: 600;
+      z-index: 10; pointer-events: none; display: none;
+      animation: pulse 1.6s ease-in-out infinite; white-space: nowrap;
+    }
+
+    #start-overlay {
+      position: fixed; inset: 0; z-index: 20;
+      background: #0a0a0a;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 18px; padding: 40px 32px; text-align: center;
+    }
+    #start-overlay.hidden { display: none; }
+    .logo { font-size: 30px; font-weight: 800; color: #fff; letter-spacing: -.5px; }
+    .logo span { color: #7C3AED; }
+    .viewer-name { font-size: 13px; font-weight: 600; color: #7C3AED; letter-spacing: .08em; text-transform: uppercase; margin-top: -6px; }
+    .tagline { font-size: 14px; color: #555; line-height: 1.65; max-width: 280px; }
+    .features { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 300px; }
+    .feat {
+      background: #141414; border: 1px solid #222;
+      border-radius: 10px; padding: 10px 14px;
+      font-size: 13px; color: #aaa; text-align: left;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .feat-icon { font-size: 16px; }
+    #start-btn {
+      background: #7C3AED; color: #fff; border: none;
+      padding: 16px 52px; border-radius: 40px; font-size: 17px;
+      font-weight: 700; cursor: pointer; letter-spacing: .02em;
+      margin-top: 4px; width: 100%; max-width: 300px;
+    }
+    #start-btn:active { opacity: .8; }
+  </style>
+</head>
+<body>
+
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <div id="crosshair"></div>
+  <div id="badge-noarcore">No ARCore</div>
+  <div id="badge-tracking">◉ Tracking</div>
+  <div id="status">…</div>
+  <div id="tap-hint">Tap to place</div>
+
+  <div id="start-overlay">
+    <div class="logo">ARI<span>group</span></div>
+    <div class="viewer-name">Android AR Viewer</div>
+    <p class="tagline">Place 3D menu items on any real surface — ARCore where available, gyroscope tracking on all other devices.</p>
+    <div class="features">
+      <div class="feat"><span class="feat-icon">📡</span>Motion tracking — gyroscope or ARCore</div>
+      <div class="feat"><span class="feat-icon">🟢</span>Surface detection — real planes or gravity floor</div>
+      <div class="feat"><span class="feat-icon">👆</span>Tap to place — contact shadows</div>
+    </div>
+    <button id="start-btn">Start AR</button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.137.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.137.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script>
+  (function () {
+    'use strict';
+
+    // ── Constants ─────────────────────────────────────────────────────────────
+    var PREDICT_MS   = 18;
+    var SLERP_FACTOR = 0.32;
+    var GRAVITY_BUF  = 40;
+    var EYE_HEIGHT   = 1.2;
+    var MODEL_HEIGHT = 0.75;
+
+    // ── DOM ───────────────────────────────────────────────────────────────────
+    var videoEl       = document.getElementById('video');
+    var canvas        = document.getElementById('canvas');
+    var statusEl      = document.getElementById('status');
+    var tapHint       = document.getElementById('tap-hint');
+    var crosshairEl   = document.getElementById('crosshair');
+    var badgeNoArcore = document.getElementById('badge-noarcore');
+    var badgeTracking = document.getElementById('badge-tracking');
+    var startOverlay  = document.getElementById('start-overlay');
+    var startBtn      = document.getElementById('start-btn');
+
+    // ── App state ─────────────────────────────────────────────────────────────
+    var appState          = 'start';
+    var useWebXR          = false;
+    var orientationFiring = false;
+    var modelTemplate     = null;
+    var placedObjects     = [];
+
+    // ── Three.js setup ────────────────────────────────────────────────────────
+    var renderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setClearColor(0x000000, 0);
+      renderer.sortObjects = true;
+      renderer.xr.enabled = true;
+    } catch (webglErr) {
+      startBtn.textContent = '⚠ WebGL not supported';
+      startBtn.style.background = '#555';
+      return;
+    }
+
+    var scene  = new THREE.Scene();
+    var camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 30);
+    camera.position.set(0, EYE_HEIGHT, 0);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x334466, 2.5));
+    var sun = new THREE.DirectionalLight(0xffffff, 1.8);
+    sun.position.set(3, 8, 4);
+    scene.add(sun);
+
+    // ── Reticle ───────────────────────────────────────────────────────────────
+    var reticleMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.92, depthWrite: false
+    });
+
+    var outerGeom = new THREE.RingGeometry(0.17, 0.205, 48);
+    var innerGeom = new THREE.RingGeometry(0.02, 0.048, 24);
+    outerGeom.rotateX(-Math.PI / 2);
+    innerGeom.rotateX(-Math.PI / 2);
+
+    var reticle = new THREE.Group();
+    reticle.add(new THREE.Mesh(outerGeom, reticleMat));
+    reticle.add(new THREE.Mesh(innerGeom, reticleMat));
+
+    for (var t = 0; t < 4; t++) {
+      var angle = t * (Math.PI / 2);
+      var tickG = new THREE.PlaneGeometry(0.018, 0.065);
+      tickG.rotateX(-Math.PI / 2);
+      tickG.rotateZ(angle);
+      var tick = new THREE.Mesh(tickG, reticleMat);
+      tick.position.set(Math.sin(angle) * 0.135, 0.001, Math.cos(angle) * 0.135);
+      reticle.add(tick);
+    }
+
+    reticle.visible = false;
+    scene.add(reticle);
+
+    // ── Virtual ground plane + raycaster (gyro mode) ──────────────────────────
+    var groundNormal = new THREE.Vector3(0, 1, 0);
+    var groundPlane  = new THREE.Plane(groundNormal, 0);
+    var raycaster    = new THREE.Raycaster();
+    var ndcCenter    = new THREE.Vector2(0, 0);
+    var hitPoint     = new THREE.Vector3();
+
+    // ── Motion tracking (gyro mode) ───────────────────────────────────────────
+    var q1            = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+    var zee           = new THREE.Vector3(0, 0, 1);
+    var euler         = new THREE.Euler();
+    var qScreen       = new THREE.Quaternion();
+    var targetQuat    = new THREE.Quaternion();
+    var displayedQuat = new THREE.Quaternion();
+    var cameraInitialised = false;
+    var rotRate       = { alpha: 0, beta: 0, gamma: 0 };
+    var gravBuf       = [];
+    var gravAvg       = { x: 0, y: -9.8, z: 0 };
+
+    window.addEventListener('devicemotion', function (e) {
+      if (useWebXR) return;
+      if (e.rotationRate) {
+        rotRate.alpha = e.rotationRate.alpha || 0;
+        rotRate.beta  = e.rotationRate.beta  || 0;
+        rotRate.gamma = e.rotationRate.gamma || 0;
+      }
+      var g = e.accelerationIncludingGravity;
+      if (g && g.x !== null && g.y !== null && g.z !== null) {
+        gravBuf.push({ x: g.x, y: g.y, z: g.z });
+        if (gravBuf.length > GRAVITY_BUF) gravBuf.shift();
+        var ax = 0, ay = 0, az = 0, n = gravBuf.length;
+        for (var i = 0; i < n; i++) { ax += gravBuf[i].x; ay += gravBuf[i].y; az += gravBuf[i].z; }
+        gravAvg.x = ax / n; gravAvg.y = ay / n; gravAvg.z = az / n;
+        var gravVec = new THREE.Vector3(gravAvg.x, gravAvg.y, gravAvg.z).normalize();
+        var invCam  = displayedQuat.clone().invert();
+        gravVec.applyQuaternion(invCam);
+        var newNormal = gravVec.clone().negate();
+        if (newNormal.dot(groundNormal) < 0.9999) {
+          groundNormal.lerp(newNormal, 0.05).normalize();
+          groundPlane.normal.copy(groundNormal);
+        }
+      }
+    }, false);
+
+    window.addEventListener('deviceorientation', function (e) {
+      if (useWebXR) return;
+      if (e.alpha === null || e.beta === null || e.gamma === null) return;
+      if (!orientationFiring) {
+        orientationFiring = true;
+        badgeTracking.textContent = '◉ Tracking';
+        badgeTracking.className = 'on';
+      }
+      if (appState === 'start' || appState === 'loading') return;
+      var screenAngle = (window.screen.orientation && window.screen.orientation.angle)
+        ? THREE.MathUtils.degToRad(window.screen.orientation.angle) : 0;
+      var dt = PREDICT_MS / 1000;
+      var pa = e.alpha + rotRate.alpha * dt;
+      var pb = e.beta  + rotRate.beta  * dt;
+      var pg = e.gamma + rotRate.gamma * dt;
+      euler.set(
+        THREE.MathUtils.degToRad(pb),
+        THREE.MathUtils.degToRad(pa),
+        THREE.MathUtils.degToRad(-pg),
+        'YXZ'
+      );
+      targetQuat.setFromEuler(euler);
+      targetQuat.multiply(q1);
+      qScreen.setFromAxisAngle(zee, -screenAngle);
+      targetQuat.multiply(qScreen);
+      if (!cameraInitialised) {
+        displayedQuat.copy(targetQuat);
+        camera.quaternion.copy(targetQuat);
+        cameraInitialised = true;
+      }
+    }, true);
+
+    // ── GLB load (shared) ─────────────────────────────────────────────────────
+    var MODEL_SRC = (new URLSearchParams(window.location.search)).get('model')
+      || 'https://arigroup-web.vercel.app/models/astronaut.glb';
+
+    function loadModel() {
+      setStatus('Loading model…');
+      new THREE.GLTFLoader().load(
+        MODEL_SRC,
+        function (gltf) {
+          var m   = gltf.scene;
+          var box = new THREE.Box3().setFromObject(m);
+          var sz  = box.getSize(new THREE.Vector3());
+          var s   = MODEL_HEIGHT / Math.max(sz.x, sz.y, sz.z);
+          m.scale.setScalar(s);
+          var c = box.getCenter(new THREE.Vector3());
+          m.position.set(-c.x * s, -box.min.y * s, -c.z * s);
+          modelTemplate = m;
+          if (!useWebXR && !orientationFiring) {
+            badgeTracking.textContent = '⚠ No gyro';
+            badgeTracking.className = 'off';
+          }
+          setState('scanning');
+        },
+        undefined,
+        function () { setStatus('⚠ Model failed to load'); }
+      );
+    }
+
+    // ── Contact shadow (shared) ───────────────────────────────────────────────
+    // floorY: world-space y of the surface (0 for gyro, hitPos.y for WebXR)
+    function makeContactShadow(x, floorY, z) {
+      var geom = new THREE.PlaneGeometry(0.55, 0.55);
+      geom.rotateX(-Math.PI / 2);
+      var mat = new THREE.MeshBasicMaterial({
+        color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false
+      });
+      var mesh = new THREE.Mesh(geom, mat);
+      mesh.position.set(x, floorY + 0.001, z);
+      mesh.renderOrder = -1;
+      scene.add(mesh);
+      return mesh;
+    }
+
+    // ── Placement — gyro path ─────────────────────────────────────────────────
+    function placeModelGyro() {
+      if (!modelTemplate || !reticle.visible) return;
+      var rx = reticle.position.x;
+      var rz = reticle.position.z;
+      var dx = camera.position.x - rx;
+      var dz = camera.position.z - rz;
+      var facing = Math.atan2(dx, dz);
+
+      if (placedObjects.length === 0) {
+        var clone = modelTemplate.clone(true);
+        clone.position.set(rx, modelTemplate.position.y, rz);
+        clone.rotation.y = facing;
+        scene.add(clone);
+        var shadow = makeContactShadow(rx, 0, rz);
+        placedObjects.push({ model: clone, shadow: shadow });
+      } else {
+        var obj = placedObjects[0];
+        obj.model.position.set(rx, modelTemplate.position.y, rz);
+        obj.model.rotation.y = facing;
+        obj.shadow.position.set(rx, 0.001, rz);
+      }
+      reticle.visible = false;
+      if (appState !== 'placed') setState('placed');
+    }
+
+    // ── Placement — WebXR path ────────────────────────────────────────────────
+    function placeModelWebXR() {
+      if (!modelTemplate || !reticle.visible) return;
+
+      var hitPos = new THREE.Vector3();
+      hitPos.setFromMatrixPosition(reticle.matrix);
+
+      // Get camera world position from the XR camera group
+      var xrCam = renderer.xr.getCamera(camera);
+      var camPos = new THREE.Vector3();
+      xrCam.getWorldPosition(camPos);
+      var dx = camPos.x - hitPos.x;
+      var dz = camPos.z - hitPos.z;
+      var facing = Math.atan2(dx, dz);
+
+      // Sit the model on the detected surface: surface y + internal floor offset
+      var placeY = hitPos.y + modelTemplate.position.y;
+
+      if (placedObjects.length === 0) {
+        var clone = modelTemplate.clone(true);
+        clone.position.set(hitPos.x, placeY, hitPos.z);
+        clone.rotation.y = facing;
+        scene.add(clone);
+        var shadow = makeContactShadow(hitPos.x, hitPos.y, hitPos.z);
+        placedObjects.push({ model: clone, shadow: shadow });
+      } else {
+        var obj = placedObjects[0];
+        obj.model.position.set(hitPos.x, placeY, hitPos.z);
+        obj.model.rotation.y = facing;
+        obj.shadow.position.set(hitPos.x, hitPos.y + 0.001, hitPos.z);
+      }
+      reticle.visible = false;
+      if (appState !== 'placed') setState('placed');
+    }
+
+    // ── Canvas tap listeners (gyro mode only) ─────────────────────────────────
+    canvas.addEventListener('click', function () {
+      if (!useWebXR) placeModelGyro();
+    });
+    canvas.addEventListener('touchend', function (e) {
+      if (useWebXR) return;
+      e.preventDefault();
+      placeModelGyro();
+    }, { passive: false });
+
+    // ── WebXR state ───────────────────────────────────────────────────────────
+    var hitTestSource          = null;
+    var hitTestSourceRequested = false;
+    var xrController           = null;
+    var currentXRSession       = null;
+
+    // ── WebXR render loop ─────────────────────────────────────────────────────
+    var clock = new THREE.Clock();
+
+    function renderWebXR(timestamp, frame) {
+      if (frame) {
+        var referenceSpace = renderer.xr.getReferenceSpace();
+        var session        = renderer.xr.getSession();
+
+        if (!hitTestSourceRequested) {
+          session.requestReferenceSpace('viewer').then(function (viewerSpace) {
+            session.requestHitTestSource({ space: viewerSpace }).then(function (source) {
+              hitTestSource = source;
+            });
+          });
+          session.addEventListener('end', function () {
+            hitTestSourceRequested = false;
+            hitTestSource = null;
+          });
+          hitTestSourceRequested = true;
+        }
+
+        if (hitTestSource) {
+          var results = frame.getHitTestResults(hitTestSource);
+          if (results.length) {
+            reticle.visible = true;
+            reticle.matrix.fromArray(results[0].getPose(referenceSpace).transform.matrix);
+            if (appState === 'scanning') setState('ready');
+          } else {
+            reticle.visible = false;
+            if (appState === 'ready') setState('scanning');
+          }
+        }
+      }
+      renderer.render(scene, camera);
+    }
+
+    // ── Gyro animate loop ─────────────────────────────────────────────────────
+    var reticleSpin = 0;
+    var animRunning = false;
+
+    function animate() {
+      requestAnimationFrame(animate);
+      var delta = clock.getDelta();
+
+      if (cameraInitialised) {
+        displayedQuat.slerp(targetQuat, SLERP_FACTOR);
+        camera.quaternion.copy(displayedQuat);
+      }
+
+      reticleSpin += delta * 0.45;
+      reticle.rotation.y = reticleSpin;
+
+      if (appState === 'scanning' || appState === 'ready' || appState === 'placed') {
+        raycaster.setFromCamera(ndcCenter, camera);
+        var hit = raycaster.ray.intersectPlane(groundPlane, hitPoint);
+        if (hit) {
+          var dist = hitPoint.distanceTo(camera.position);
+          if (dist > 0.3 && dist < 8) {
+            reticle.position.copy(hitPoint);
+            var sc = THREE.MathUtils.clamp(dist * 0.55, 0.35, 2.2);
+            reticle.scale.setScalar(sc);
+            reticle.visible = true;
+            if (appState === 'scanning') setState('ready');
+          } else {
+            reticle.visible = false;
+            if (appState === 'ready') setState('scanning');
+          }
+        } else {
+          reticle.visible = false;
+          if (appState === 'ready') setState('scanning');
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    // ── State helpers (shared) ────────────────────────────────────────────────
+    function setState(s) {
+      appState = s;
+      var showHUD = (s !== 'start');
+      statusEl.style.display    = showHUD ? 'block' : 'none';
+      crosshairEl.style.display = (s === 'scanning' || s === 'ready' || s === 'placed') ? 'block' : 'none';
+      tapHint.style.display     = (s === 'ready') ? 'block' : 'none';
+      if (s === 'loading' || s === 'scanning') reticle.visible = false;
+      switch (s) {
+        case 'loading':  setStatus('Loading model…');            break;
+        case 'scanning': setStatus('Point camera at the floor'); break;
+        case 'ready':    setStatus('Surface found');             break;
+        case 'placed':   setStatus('Tap to move');               break;
+      }
+    }
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+
+    // ── Reset to start (called when WebXR session ends) ───────────────────────
+    function resetToStart() {
+      for (var i = 0; i < placedObjects.length; i++) {
+        scene.remove(placedObjects[i].model);
+        scene.remove(placedObjects[i].shadow);
+      }
+      placedObjects = [];
+
+      reticle.visible = false;
+      reticle.matrixAutoUpdate = true;
+
+      hitTestSource          = null;
+      hitTestSourceRequested = false;
+      if (xrController) { scene.remove(xrController); xrController = null; }
+      currentXRSession = null;
+      useWebXR = false;
+
+      renderer.setAnimationLoop(null);
+      renderer.setClearColor(0x000000, 0);
+
+      badgeNoArcore.textContent = 'No ARCore';
+      badgeNoArcore.className = '';
+      badgeTracking.className = '';
+
+      cameraInitialised = false;
+      animRunning = false;
+      videoEl.style.display = '';
+
+      appState = 'start';
+      startOverlay.classList.remove('hidden');
+      statusEl.style.display = 'none';
+    }
+
+    // ── Start WebXR path ──────────────────────────────────────────────────────
+    function startWebXR() {
+      setStatus('Starting AR session…');
+      badgeNoArcore.textContent = '◉ ARCore';
+      badgeNoArcore.className = 'arcore';
+
+      navigator.xr.requestSession('immersive-ar', {
+        requiredFeatures: ['hit-test'],
+        optionalFeatures: ['local-floor']
+      }).then(function (session) {
+        currentXRSession = session;
+
+        return session.requestReferenceSpace('local-floor')
+          .then(function () { renderer.xr.setReferenceSpaceType('local-floor'); })
+          .catch(function () { renderer.xr.setReferenceSpaceType('local'); })
+          .then(function () { return renderer.xr.setSession(session); })
+          .then(function () {
+            renderer.setClearColor(0x000000, 0);
+            session.addEventListener('end', resetToStart);
+
+            xrController = renderer.xr.getController(0);
+            xrController.addEventListener('select', placeModelWebXR);
+            scene.add(xrController);
+
+            // WebXR drives the reticle via matrix directly
+            reticle.matrixAutoUpdate = false;
+            videoEl.style.display = 'none';
+
+            renderer.setAnimationLoop(renderWebXR);
+            setState('loading');
+            loadModel();
+          });
+      }).catch(function () {
+        // Fall back to gyro silently
+        badgeNoArcore.textContent = 'No ARCore';
+        badgeNoArcore.className = '';
+        useWebXR = false;
+        startGyroPath();
+      });
+    }
+
+    // ── Start gyro / camera fallback path ─────────────────────────────────────
+    function startGyroPath() {
+      function launch() {
+        setStatus('Starting camera…');
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+          .then(function (stream) {
+            videoEl.srcObject = stream;
+            videoEl.play().catch(function (err) {
+              setStatus('❌ Camera play: ' + (err.message || String(err)));
+            });
+            setState('loading');
+            loadModel();
+            if (!animRunning) { animRunning = true; animate(); }
+          })
+          .catch(function (e) {
+            setStatus('❌ Camera: ' + (e.message || String(e)));
+          });
+      }
+
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission().then(launch).catch(launch);
+      } else {
+        launch();
+      }
+    }
+
+    // ── Start button ──────────────────────────────────────────────────────────
+    startBtn.addEventListener('click', function () {
+      startOverlay.classList.add('hidden');
+      statusEl.style.display = 'block';
+      setStatus('Checking AR support…');
+
+      if (navigator.xr) {
+        navigator.xr.isSessionSupported('immersive-ar')
+          .then(function (supported) {
+            if (supported) {
+              useWebXR = true;
+              startWebXR();
+            } else {
+              startGyroPath();
+            }
+          })
+          .catch(function () {
+            startGyroPath();
+          });
+      } else {
+        startGyroPath();
+      }
+    });
+
+    // ── Resize ────────────────────────────────────────────────────────────────
+    window.addEventListener('resize', function () {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+  })();
+  </script>
+</body>
+</html>
