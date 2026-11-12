@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import AdminDashboard from './pages/AdminDashboard';
 import ARViewerModelViewer from './pages/ARViewerModelViewer';
 import ARViewer from './pages/ARViewer';
+import ARStep2 from './pages/ARStep2';
 import './App.css';
 
 function App() {
@@ -23,6 +24,8 @@ function App() {
   return (
     <Router>
       <Routes>
+        {/* AR step 2 test — camera + model load */}
+        <Route path="/ar-step2" element={<ARStep2 />} />
         {/* Primary: Google model-viewer with native AR support */}
         <Route path="/view/:modelId" element={<ARViewerModelViewer />} />
         {/* Fallback: WebXR implementation */}
