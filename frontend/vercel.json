@@ -2,10 +2,8 @@
   "env": {
     "REACT_APP_API_URL": "https://arigroup-api.onrender.com"
   },
-  "rewrites": [
-    {
-      "source": "/((?!.*\\.html$).*)",
-      "destination": "/index.html"
-    }
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
