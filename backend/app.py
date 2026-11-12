@@ -296,7 +296,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 }
 #overlay.hidden{display:none}
 #overlay h2{font-size:20px;font-weight:700;text-align:center}
-#overlay p{font-size:13px;color:#888;text-align:center;max-width:280px;line-height:1.5}
+#overlay p{font-size:13px;color:#aaa;text-align:center;max-width:280px;line-height:1.5}
 #start-btn{
   background:#e37400;color:#fff;border:none;border-radius:12px;
   padding:14px 40px;font:700 16px sans-serif;cursor:pointer;
@@ -317,42 +317,43 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 <body>
 <div id="overlay">
   <h2>AR Viewer</h2>
-  <p id="status-p">Checking device…</p>
+  <p id="status-p">Loading...</p>
   <button id="start-btn" disabled>Start AR</button>
 </div>
-<div id="info">Move phone over a surface…</div>
-<button id="exit-btn" onclick="history.back()">✕ Exit</button>
+<div id="info">Move phone over a surface...</div>
+<button id="exit-btn" onclick="history.back()">Exit</button>
 
-<script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.module.js';
-import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.154.0/examples/jsm/loaders/GLTFLoader.js';
-
-const MODEL = new URLSearchParams(location.search).get('model')
+<!-- UMD builds — no ES module imports needed -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.154.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+var MODEL = new URLSearchParams(location.search).get('model')
   || 'https://arigroup-web.vercel.app/models/astronaut.glb';
 
-const overlay  = document.getElementById('overlay');
-const statusP  = document.getElementById('status-p');
-const startBtn = document.getElementById('start-btn');
-const infoEl   = document.getElementById('info');
-const exitBtn  = document.getElementById('exit-btn');
+var overlay  = document.getElementById('overlay');
+var statusP  = document.getElementById('status-p');
+var startBtn = document.getElementById('start-btn');
+var infoEl   = document.getElementById('info');
+var exitBtn  = document.getElementById('exit-btn');
 
-const MAX_PLACED = 30;
+var MAX_PLACED = 30;
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-renderer.setPixelRatio(devicePixelRatio);
-renderer.setSize(innerWidth, innerHeight);
+var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 renderer.setClearColor(0x000000, 0);
 document.body.appendChild(renderer.domElement);
 renderer.domElement.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:1';
 
-const scene = new THREE.Scene();
+var scene = new THREE.Scene();
 scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 2));
-const sun = new THREE.DirectionalLight(0xffffff, 1.5);
-sun.position.set(1, 3, 2); scene.add(sun);
-const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 20);
+var sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(1, 3, 2);
+scene.add(sun);
+var camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
-const reticle = new THREE.Mesh(
+var reticle = new THREE.Mesh(
   new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI / 2),
   new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
 );
@@ -360,54 +361,57 @@ reticle.matrixAutoUpdate = false;
 reticle.visible = false;
 scene.add(reticle);
 
-let modelTemplate = null;
-let placed = [];
+var modelTemplate = null;
+var placed = [];
 
-statusP.textContent = 'Loading model…';
-new GLTFLoader().load(MODEL, gltf => {
+statusP.textContent = 'Loading model...';
+
+var loader = new THREE.GLTFLoader();
+loader.load(MODEL, function(gltf) {
   modelTemplate = gltf.scene;
-  const box = new THREE.Box3().setFromObject(modelTemplate);
-  const sz  = box.getSize(new THREE.Vector3());
-  const mx  = Math.max(sz.x, sz.y, sz.z);
+  var box = new THREE.Box3().setFromObject(modelTemplate);
+  var sz  = box.getSize(new THREE.Vector3());
+  var mx  = Math.max(sz.x, sz.y, sz.z);
   if (mx > 0) modelTemplate.scale.setScalar(0.3 / mx);
   modelTemplate.position.sub(box.getCenter(new THREE.Vector3()).multiplyScalar(0.3 / mx));
   modelTemplate.visible = false;
   scene.add(modelTemplate);
 
   if (navigator.xr) {
-    navigator.xr.isSessionSupported('immersive-ar').then(ok => {
+    navigator.xr.isSessionSupported('immersive-ar').then(function(ok) {
       if (ok) {
         statusP.textContent = 'Ready — tap Start AR';
         startBtn.disabled = false;
       } else {
         statusP.textContent = 'WebXR AR not supported on this device.';
       }
-    }).catch(() => { statusP.textContent = 'Could not check AR support.'; });
+    }).catch(function() {
+      statusP.textContent = 'Could not check AR support.';
+    });
   } else {
     statusP.textContent = 'WebXR not available in this browser.';
   }
-}, null, e => { statusP.textContent = 'Model failed: ' + (e.message || e); });
+}, undefined, function(e) {
+  statusP.textContent = 'Model failed: ' + (e.message || String(e));
+});
 
-let xrRefSpace      = null;
-let xrViewerSpace   = null;
-let xrHitTestSource = null;
+var xrRefSpace      = null;
+var xrViewerSpace   = null;
+var xrHitTestSource = null;
 
-startBtn.addEventListener('click', async () => {
+startBtn.addEventListener('click', function() {
   overlay.classList.add('hidden');
-  try {
-    const session = await navigator.xr.requestSession('immersive-ar', {
-      requiredFeatures: ['local', 'hit-test'],
-      optionalFeatures: ['dom-overlay'],
-      domOverlay: { root: document.body }
-    });
-
+  navigator.xr.requestSession('immersive-ar', {
+    requiredFeatures: ['local', 'hit-test'],
+    optionalFeatures: ['dom-overlay'],
+    domOverlay: { root: document.body }
+  }).then(function(session) {
     renderer.xr.setSession(session);
     infoEl.style.display = 'block';
     exitBtn.style.display = 'block';
 
-    session.addEventListener('end', () => {
-      xrHitTestSource?.cancel();
-      xrHitTestSource = null;
+    session.addEventListener('end', function() {
+      if (xrHitTestSource) { xrHitTestSource.cancel(); xrHitTestSource = null; }
       infoEl.style.display = 'none';
       exitBtn.style.display = 'none';
       overlay.classList.remove('hidden');
@@ -416,23 +420,28 @@ startBtn.addEventListener('click', async () => {
       renderer.setAnimationLoop(null);
     });
 
-    xrViewerSpace   = await session.requestReferenceSpace('viewer');
-    xrHitTestSource = await session.requestHitTestSource({ space: xrViewerSpace });
-    xrRefSpace      = await session.requestReferenceSpace('local');
+    session.requestReferenceSpace('viewer').then(function(vs) {
+      xrViewerSpace = vs;
+      return session.requestHitTestSource({ space: vs });
+    }).then(function(hts) {
+      xrHitTestSource = hts;
+      return session.requestReferenceSpace('local');
+    }).then(function(rs) {
+      xrRefSpace = rs;
+      session.addEventListener('select', onSelect);
+      renderer.setAnimationLoop(onXRFrame);
+    });
 
-    session.addEventListener('select', onSelect);
-    renderer.setAnimationLoop(onXRFrame);
-
-  } catch (e) {
+  }).catch(function(e) {
     overlay.classList.remove('hidden');
     statusP.textContent = 'AR failed: ' + e.message;
     startBtn.disabled = false;
-  }
+  });
 });
 
 function onSelect() {
   if (!reticle.visible || !modelTemplate) return;
-  const clone = modelTemplate.clone();
+  var clone = modelTemplate.clone();
   clone.visible = true;
   clone.matrix.copy(reticle.matrix);
   clone.matrixAutoUpdate = false;
@@ -444,25 +453,25 @@ function onSelect() {
 
 function onXRFrame(t, frame) {
   if (!frame) return;
-  const pose = frame.getViewerPose(xrRefSpace);
+  var pose = frame.getViewerPose(xrRefSpace);
   reticle.visible = false;
   if (xrHitTestSource && pose) {
-    const hits = frame.getHitTestResults(xrHitTestSource);
+    var hits = frame.getHitTestResults(xrHitTestSource);
     if (hits.length > 0) {
       reticle.visible = true;
       reticle.matrix.fromArray(hits[0].getPose(xrRefSpace).transform.matrix);
       infoEl.textContent = 'Surface found — tap to place';
     } else {
-      infoEl.textContent = 'Move phone over a surface…';
+      infoEl.textContent = 'Move phone over a surface...';
     }
   }
   renderer.render(scene, camera);
 }
 
-window.addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
+window.addEventListener('resize', function() {
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
+  renderer.setSize(window.innerWidth, window.innerHeight);
 });
 </script>
 </body>
