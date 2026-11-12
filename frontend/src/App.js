@@ -5,7 +5,7 @@ import AdminDashboard from './pages/AdminDashboard';
 import ARViewerModelViewer from './pages/ARViewerModelViewer';
 import ARViewer from './pages/ARViewer';
 import ARStep2 from './pages/ARStep2';
-import ARViewer2 from './pages/ARViewer2';
+import ARPage from './pages/ARPage';
 import './App.css';
 
 function App() {
@@ -28,7 +28,7 @@ function App() {
         {/* AR step 2 test — camera + model load */}
         <Route path="/ar-step2" element={<ARStep2 />} />
         {/* Full AR viewer — WebXR hit-test + gyro fallback */}
-        <Route path="/ar" element={<ARViewer2 />} />
+        <Route path="/ar" element={<ARPage />} />
         {/* Primary: Google model-viewer with native AR support */}
         <Route path="/view/:modelId" element={<ARViewerModelViewer />} />
         {/* Fallback: WebXR implementation */}
