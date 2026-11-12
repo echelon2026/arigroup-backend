@@ -6,6 +6,12 @@ import ARViewerModelViewer from './pages/ARViewerModelViewer';
 import ARViewer from './pages/ARViewer';
 import ARStep2 from './pages/ARStep2';
 import ARPage from './pages/ARPage';
+import ARLab  from './pages/ARLab';
+import ARV1   from './pages/ARV1';
+import ARV2   from './pages/ARV2';
+import ARV3   from './pages/ARV3';
+import ARV4   from './pages/ARV4';
+import ARV5   from './pages/ARV5';
 import './App.css';
 
 function App() {
@@ -27,6 +33,14 @@ function App() {
       <Routes>
         {/* AR step 2 test — camera + model load */}
         <Route path="/ar-step2" element={<ARStep2 />} />
+        {/* AR lab — pick a viewer */}
+        <Route path="/ar-viewers" element={<ARLab />} />
+        {/* Individual AR viewers */}
+        <Route path="/ar-v1" element={<ARV1 />} />
+        <Route path="/ar-v2" element={<ARV2 />} />
+        <Route path="/ar-v3" element={<ARV3 />} />
+        <Route path="/ar-v4" element={<ARV4 />} />
+        <Route path="/ar-v5" element={<ARV5 />} />
         {/* Full AR viewer — WebXR hit-test + gyro fallback */}
         <Route path="/ar" element={<ARPage />} />
         {/* Primary: Google model-viewer with native AR support */}
