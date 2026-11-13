@@ -318,13 +318,6 @@ html,body{width:100%;height:100%;overflow:hidden;background:transparent}
   background:rgba(0,0,0,.65);color:#fff;border:none;border-radius:20px;
   padding:9px 18px;font:700 13px sans-serif;cursor:pointer;display:none;
 }
-/* TEMP DEBUG: hit-test diagnostics overlay */
-#dbg{
-  position:fixed;top:8px;left:8px;z-index:30;max-width:70vw;
-  background:rgba(0,0,0,.7);color:#0f0;padding:6px 8px;border-radius:6px;
-  font:11px/1.4 monospace;white-space:pre-wrap;word-break:break-word;
-  pointer-events:none;display:none;
-}
 </style>
 </head>
 <body>
@@ -336,7 +329,6 @@ html,body{width:100%;height:100%;overflow:hidden;background:transparent}
 </div>
 <div id="info">Move phone over a surface...</div>
 <button id="exit-btn">Exit</button>
-<div id="dbg"></div>
 
 <!-- 1. Bootstrap: runs before any CDN script so the status always changes and errors are always visible -->
 <script>
@@ -409,11 +401,10 @@ setStatus('Loading 3D engine...');
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.setClearColor(0x000000, 0);
-  renderer.xr.enabled = true;
-  // three defaults to 'local-floor', which is NOT in requiredFeatures and would be rejected.
-  renderer.xr.setReferenceSpaceType('local');
-  renderer.domElement.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:1';
+  // NOTE: renderer.xr is deliberately NOT enabled. The WebXR session is driven with the raw
+  // API (same as the immersive-web hit-test sample); three.js is used for drawing only.
   document.body.appendChild(renderer.domElement);
+  renderer.domElement.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:1';
 
   var scene = new THREE.Scene();
   scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 1.2));
@@ -421,6 +412,7 @@ setStatus('Loading 3D engine...');
   sun.position.set(1, 3, 2);
   scene.add(sun);
   var camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+  camera.matrixAutoUpdate = false;   // matrix is set from the XR viewer pose every frame
 
   var reticle = new THREE.Mesh(
     new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI / 2),
@@ -514,58 +506,12 @@ setStatus('Loading 3D engine...');
     });
   }
 
-  // ---------- Session ----------
+  // ---------- Session (raw WebXR, no renderer.xr) ----------
   var xrRefSpace      = null;   // 'local'  : objects are placed in this space so they stay put
   var xrViewerSpace   = null;   // 'viewer' : only used as the hit-test ray source
   var xrHitTestSource = null;
-
-  // ---------- TEMP DEBUG: hit-test diagnostics ----------
-  var dbgEl = document.getElementById('dbg');
-  var NL = String.fromCharCode(10);
-  var dbg = { frames: 0, hits: 0, poses: 0, htsState: 'null', lastError: '', lastLog: 0 };
-  function dbgError(where, e) {
-    dbg.lastError = where + ': ' + (e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e));
-    console.log('[AR dbg] error ' + dbg.lastError);
-  }
-  function dbgText() {
-    return 'Frames: ' + dbg.frames + NL +
-      'Hits: ' + dbg.hits + '  Poses: ' + dbg.poses + NL +
-      'HTS: ' + (xrHitTestSource ? 'ready' : dbg.htsState) + '  RS: ' + (xrRefSpace ? 'ready' : 'null') + NL +
-      'Err: ' + (dbg.lastError || 'none');
-  }
-  function dbgRender(t) {
-    dbgEl.textContent = dbgText();
-    if (t - dbg.lastLog >= 1000) {
-      dbg.lastLog = t;
-      console.log('[AR dbg] frames=' + dbg.frames + ' hits=' + dbg.hits + ' poses=' + dbg.poses +
-        ' hts=' + (xrHitTestSource ? 'ready' : dbg.htsState) + ' rs=' + (xrRefSpace ? 'ready' : 'null') +
-        ' err=' + (dbg.lastError || 'none'));
-    }
-  }
-
-  // Requested from inside the first XRFrame callback (some Android Chrome builds return
-  // empty results for a source requested before the first frame). Retries after a failure.
-  var htsRequesting = false;
-  function ensureHitTestSource(session) {
-    if (xrHitTestSource || htsRequesting || !session) return;
-    htsRequesting = true;
-    dbg.htsState = 'requesting';
-    session.requestReferenceSpace('viewer').then(function(vs) {
-      xrViewerSpace = vs;
-      return session.requestHitTestSource({ space: vs });
-    }).then(function(hts) {
-      htsRequesting = false;
-      if (session !== xrSession) { try { hts.cancel(); } catch (e) {} return; }
-      xrHitTestSource = hts;
-      dbg.htsState = 'ready';
-      console.log('[AR dbg] hit-test source ready at frame ' + dbg.frames);
-    }).catch(function(e) {
-      dbg.htsState = 'null';
-      dbgError('requestHitTestSource', e);
-      // retry in ~1s rather than every frame
-      setTimeout(function() { htsRequesting = false; }, 1000);
-    });
-  }
+  var xrTarget        = null;   // render target that wraps the XRWebGLLayer framebuffer
+  var frameErrorShown = false;
 
   function onSessionEnd() {
     if (xrHitTestSource) { try { xrHitTestSource.cancel(); } catch (e) {} }
@@ -574,11 +520,10 @@ setStatus('Loading 3D engine...');
     xrViewerSpace = null;
     xrSession = null;
     reticle.visible = false;
-    renderer.setAnimationLoop(null);
+    try { renderer.setRenderTarget(null); } catch (e) {}
+    if (xrTarget) { try { xrTarget.dispose(); } catch (e) {} xrTarget = null; }
     infoEl.style.display = 'none';
     exitBtn.style.display = 'none';
-    dbgEl.style.display = 'none';
-    htsRequesting = false;
     overlay.classList.remove('hidden');
     setStatus('Session ended. Tap Start AR to go again.');
     startBtn.disabled = false;
@@ -587,33 +532,40 @@ setStatus('Loading 3D engine...');
   startBtn.addEventListener('click', function() {
     startBtn.disabled = true;
     setStatus('Starting AR...');
+    var session = null;
     navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['local', 'hit-test'],
       optionalFeatures: ['dom-overlay'],
       domOverlay: { root: document.body }
-    }).then(function(session) {
-      xrSession = session;
+    }).then(function(s) {
+      session = s;
+      xrSession = s;
       session.addEventListener('end', onSessionEnd);
-      // setSession requests the 'local' reference space (set above) and resolves when it is ready
-      return renderer.xr.setSession(session).then(function() {
-        xrRefSpace = renderer.xr.getReferenceSpace();
-        // The hit-test source is NOT requested here: onXRFrame requests it on the first XRFrame.
-        dbg.frames = 0; dbg.hits = 0; dbg.poses = 0; dbg.lastError = ''; dbg.lastLog = 0;
-        dbg.htsState = 'null';
-        htsRequesting = false;
-        frameErrorShown = false;
-        session.addEventListener('select', onSelect);
-        overlay.classList.add('hidden');
-        infoEl.textContent = 'Move phone over a surface...';
-        infoEl.style.display = 'block';
-        exitBtn.style.display = 'block';
-        dbgEl.style.display = 'block';
-        dbgEl.textContent = dbgText();
-        renderer.setAnimationLoop(onXRFrame);
+      session.addEventListener('select', onSelect);
+      // Raw WebGL base layer on three's own GL context
+      var gl = renderer.getContext();
+      return gl.makeXRCompatible().then(function() {
+        session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
       });
+    }).then(function() {
+      // Same order as the immersive-web hit-test sample: viewer space -> hit-test source -> local space
+      return session.requestReferenceSpace('viewer');
+    }).then(function(vs) {
+      xrViewerSpace = vs;
+      return session.requestHitTestSource({ space: vs });
+    }).then(function(hts) {
+      xrHitTestSource = hts;
+      return session.requestReferenceSpace('local');
+    }).then(function(rs) {
+      xrRefSpace = rs;
+      frameErrorShown = false;
+      overlay.classList.add('hidden');
+      infoEl.textContent = 'Move phone over a surface...';
+      infoEl.style.display = 'block';
+      exitBtn.style.display = 'block';
+      session.requestAnimationFrame(onXRFrame);
     }).catch(function(e) {
       var msg = (e && e.message) ? e.message : String(e);
-      dbgError('session start', e);
       if (xrSession) { try { xrSession.end(); } catch (x) {} }
       overlay.classList.remove('hidden');
       setStatus('AR failed to start.');
@@ -639,40 +591,73 @@ setStatus('Loading 3D engine...');
     infoEl.textContent = 'Tap again to place another';
   }
 
-  var frameErrorShown = false;
+  // three must draw into the XRWebGLLayer framebuffer, not the canvas. The layer framebuffer is
+  // wrapped in a render target so three binds it itself and keeps its GL state cache correct
+  // (a bare gl.bindFramebuffer would be undone by any internal pass, e.g. transmission).
+  function bindXRLayer(layer) {
+    var w = layer.framebufferWidth, h = layer.framebufferHeight;
+    if (!xrTarget) {
+      xrTarget = new THREE.WebGLRenderTarget(w, h, {
+        format: THREE.RGBAFormat,
+        type: THREE.UnsignedByteType,
+        encoding: renderer.outputEncoding
+      });
+      xrTarget.isXRRenderTarget = true;   // keeps sRGB output when rendering to this target
+    } else if (xrTarget.width !== w || xrTarget.height !== h) {
+      xrTarget.setSize(w, h);
+    }
+    renderer.setRenderTargetFramebuffer(xrTarget, layer.framebuffer);
+  }
+
   function onXRFrame(t, frame) {
-    if (!frame) return;
-    dbg.frames++;
-    if (!xrRefSpace) { dbgRender(t); return; }
-    // First-frame (and retry) hit-test source init
-    if (!xrHitTestSource) ensureHitTestSource(frame.session);
+    var session = frame.session;
+    if (session !== xrSession) return;
+    session.requestAnimationFrame(onXRFrame);
     try {
-      reticle.visible = false;
-      if (xrHitTestSource) {
-        var hits = frame.getHitTestResults(xrHitTestSource);
-        if (hits.length > 0) dbg.hits++;
-        var pose = hits.length > 0 ? hits[0].getPose(xrRefSpace) : null;
-        if (pose) {
-          dbg.poses++;
-          reticle.visible = true;
-          reticle.matrix.fromArray(pose.transform.matrix);
-          if (placed.length === 0) infoEl.textContent = 'Surface found. Tap to place';
-        } else if (placed.length === 0) {
-          infoEl.textContent = 'Move phone over a surface...';
-        }
+      var pose = frame.getViewerPose(xrRefSpace);
+      if (!pose) return;
+
+      // Hit test
+      var hits = frame.getHitTestResults(xrHitTestSource);
+      var hitPose = hits.length > 0 ? hits[0].getPose(xrRefSpace) : null;
+      if (hitPose) {
+        reticle.visible = true;
+        reticle.matrix.fromArray(hitPose.transform.matrix);
+        reticle.matrixWorldNeedsUpdate = true;
+        if (placed.length === 0) infoEl.textContent = 'Surface found - tap to place';
+      } else {
+        reticle.visible = false;
+        if (placed.length === 0) infoEl.textContent = 'Move phone over a surface...';
+      }
+
+      var layer = session.renderState.baseLayer;
+      bindXRLayer(layer);
+      for (var i = 0; i < pose.views.length; i++) {
+        var view = pose.views[i];
+        var vp = layer.getViewport(view);
+        xrTarget.viewport.set(vp.x, vp.y, vp.width, vp.height);
+        xrTarget.scissor.set(vp.x, vp.y, vp.width, vp.height);
+        renderer.setRenderTarget(xrTarget);
+
+        // Three.js camera straight from the XR view
+        camera.matrix.fromArray(view.transform.matrix);
+        camera.matrix.decompose(camera.position, camera.quaternion, camera.scale);
+        camera.updateMatrixWorld(true);
+        camera.projectionMatrix.fromArray(view.projectionMatrix);
+        camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+
+        renderer.render(scene, camera);
       }
     } catch (e) {
-      dbgError('frame', e);
-      if (!frameErrorShown) { frameErrorShown = true; infoEl.textContent = 'Frame error: ' + e.message; }
+      if (!frameErrorShown) {
+        frameErrorShown = true;
+        infoEl.textContent = 'Frame error: ' + (e && e.message ? e.message : String(e));
+      }
     }
-    dbgRender(t);
-    renderer.render(scene, camera);
   }
 
   window.addEventListener('resize', function() {
-    if (renderer.xr.isPresenting) return;
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
+    if (xrSession) return;
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 })();
