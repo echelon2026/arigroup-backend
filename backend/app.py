@@ -420,18 +420,6 @@ startBtn.addEventListener('click', function() {
   }).then(function(session) {
     xrSession = session;
 
-    // Get hit-test source using viewer space — BEFORE setSession so Three.js
-    // doesn't lock the reference space type first
-    session.requestReferenceSpace('viewer').then(function(viewerSpace) {
-      return session.requestHitTestSource({ space: viewerSpace });
-    }).then(function(hts) {
-      xrHitTestSource = hts;
-    });
-
-    renderer.xr.setSession(session);
-    infoEl.style.display = 'block';
-    exitBtn.style.display = 'block';
-
     session.addEventListener('end', function() {
       if (xrHitTestSource) { xrHitTestSource.cancel(); xrHitTestSource = null; }
       xrSession = null;
@@ -439,13 +427,29 @@ startBtn.addEventListener('click', function() {
       infoEl.style.display = 'none';
       exitBtn.style.display = 'none';
       overlay.classList.remove('hidden');
-      statusP.textContent = 'Session ended — tap Start AR to go again';
+      statusP.textContent = 'Session ended - tap Start AR to go again';
       startBtn.disabled = false;
       renderer.setAnimationLoop(null);
     });
 
     session.addEventListener('select', onSelect);
-    renderer.setAnimationLoop(onXRFrame);
+
+    // setSession sets up updateRenderState (base layer) internally.
+    // Hit-test source MUST be requested AFTER updateRenderState — matching
+    // the immersive-web sample which calls updateRenderState synchronously first.
+    return renderer.xr.setSession(session);
+
+  }).then(function() {
+    var session = xrSession;
+    // Base layer is now set up — safe to request hit-test source
+    return session.requestReferenceSpace('viewer').then(function(viewerSpace) {
+      return session.requestHitTestSource({ space: viewerSpace });
+    }).then(function(hts) {
+      xrHitTestSource = hts;
+      infoEl.style.display = 'block';
+      exitBtn.style.display = 'block';
+      renderer.setAnimationLoop(onXRFrame);
+    });
 
   }).catch(function(e) {
     overlay.classList.remove('hidden');
