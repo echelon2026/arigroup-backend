@@ -287,21 +287,27 @@ AR_VIEWER_HTML = """<!DOCTYPE html>
 <title>ARIGroup AR</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;overflow:hidden;background:#000}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:system-ui,sans-serif;color:#fff}
 #overlay{
   position:fixed;inset:0;z-index:10;
   display:flex;flex-direction:column;align-items:center;justify-content:center;
-  background:#000;font-family:-apple-system,BlinkMacSystemFont,sans-serif;
-  color:#fff;gap:16px;padding:24px;
+  background:#000;gap:16px;padding:24px;text-align:center;
 }
 #overlay.hidden{display:none}
-#overlay h2{font-size:20px;font-weight:700;text-align:center}
-#overlay p{font-size:13px;color:#aaa;text-align:center;max-width:300px;line-height:1.5}
 #start-btn{
   background:#e37400;color:#fff;border:none;border-radius:12px;
-  padding:14px 40px;font:700 16px sans-serif;cursor:pointer;
+  padding:14px 40px;font:700 16px sans-serif;cursor:pointer;margin-top:8px;
 }
 #start-btn:disabled{opacity:.4;cursor:default}
+/* CSS reticle — a white ring shown via DOM overlay over the camera feed */
+#css-reticle{
+  position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:70px;height:70px;border-radius:50%;
+  border:3px solid rgba(255,255,255,0.9);
+  pointer-events:none;z-index:5;display:none;
+  box-shadow:0 0 0 1px rgba(0,0,0,0.3);
+}
+#css-reticle.hit{border-color:#fff;box-shadow:0 0 8px rgba(255,255,255,0.6);}
 #info{
   position:fixed;bottom:50px;left:50%;transform:translateX(-50%);
   background:rgba(0,0,0,.72);color:#fff;padding:9px 20px;border-radius:20px;
@@ -317,57 +323,78 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000}
 <body>
 <div id="overlay">
   <h2>AR Viewer</h2>
-  <p id="status-p">Loading...</p>
+  <p id="status-p">Checking AR support...</p>
   <button id="start-btn" disabled>Start AR</button>
 </div>
-<div id="info">Move phone over a surface...</div>
-<button id="exit-btn">Exit</button>
+<div id="css-reticle"></div>
+<div id="info">Move phone slowly over a flat surface...</div>
+<button id="exit-btn" onclick="endXR()">Exit</button>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/loaders/GLTFLoader.js"></script>
-
 <script>
-var statusP  = document.getElementById('status-p');
-var overlay  = document.getElementById('overlay');
-var startBtn = document.getElementById('start-btn');
-var infoEl   = document.getElementById('info');
-var exitBtn  = document.getElementById('exit-btn');
+var statusP    = document.getElementById('status-p');
+var overlay    = document.getElementById('overlay');
+var startBtn   = document.getElementById('start-btn');
+var infoEl     = document.getElementById('info');
+var exitBtn    = document.getElementById('exit-btn');
+var cssReticle = document.getElementById('css-reticle');
 
-var MODEL = new URLSearchParams(location.search).get('model')
-  || 'https://arigroup-web.vercel.app/models/astronaut.glb';
-var MAX_PLACED = 30;
+// --- AR support check ---
+if (!navigator.xr) {
+  statusP.textContent = 'WebXR not available. Open in Chrome on Android.';
+} else {
+  navigator.xr.isSessionSupported('immersive-ar').then(function(ok) {
+    if (ok) { statusP.textContent = 'Ready — tap Start AR'; startBtn.disabled = false; }
+    else    { statusP.textContent = 'AR not supported on this device.'; }
+  });
+}
 
-// Three.js — renderer.xr handles the WebXR base layer and framebuffer correctly
-var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+// --- Raw WebXR state (no Three.js XR manager) ---
+var xrSession       = null;
+var xrRefSpace      = null;   // 'local' — objects stay fixed in world
+var xrHitTestSource = null;   // viewer-space hit-test source
+
+// --- Three.js scene (rendering only, no xr.enabled) ---
+var canvas = document.createElement('canvas');
+document.body.appendChild(canvas);
+canvas.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:1;pointer-events:none;';
+var gl = canvas.getContext('webgl', { xrCompatible: true, alpha: true, antialias: true });
+var renderer = new THREE.WebGLRenderer({ canvas: canvas, context: gl, alpha: true, antialias: true });
+renderer.setClearColor(0x000000, 0);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setClearColor(0x000000, 0);
-renderer.xr.enabled = true;
-renderer.xr.setReferenceSpaceType('local');
-document.body.appendChild(renderer.domElement);
-renderer.domElement.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:1';
 
 var scene  = new THREE.Scene();
 var camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 20);
+camera.matrixAutoUpdate = false;
 scene.add(new THREE.HemisphereLight(0xffffff, 0x888888, 2));
 var sun = new THREE.DirectionalLight(0xffffff, 1.5);
 sun.position.set(1, 3, 2);
 scene.add(sun);
 
-// Reticle — flat white ring on the detected surface
-var reticle = new THREE.Mesh(
+// --- 3D Reticle ring (shown in WebGL when surface detected) ---
+var reticle3d = new THREE.Mesh(
   new THREE.RingGeometry(0.07, 0.09, 32).rotateX(-Math.PI / 2),
   new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
 );
-reticle.matrixAutoUpdate = false;
-reticle.visible = false;
-scene.add(reticle);
+reticle3d.matrixAutoUpdate = false;
+reticle3d.visible = false;
+scene.add(reticle3d);
 
+// --- Model loading ---
 var modelTemplate = null;
 var placed = [];
-
-// Load model
 statusP.textContent = 'Loading model...';
+var MODEL = new URLSearchParams(location.search).get('model')
+  || 'https://arigroup-web.vercel.app/models/astronaut.glb';
+
+function makeBox() {
+  var g = new THREE.Group();
+  var m = new THREE.Mesh(new THREE.BoxGeometry(0.15,0.15,0.15),
+    new THREE.MeshStandardMaterial({color:0xe37400}));
+  m.position.y = 0.075; g.add(m); return g;
+}
 new THREE.GLTFLoader().load(MODEL, function(gltf) {
   var obj = gltf.scene;
   var box = new THREE.Box3().setFromObject(obj);
@@ -376,43 +403,24 @@ new THREE.GLTFLoader().load(MODEL, function(gltf) {
   if (mx > 0) {
     var k = 0.3 / mx;
     obj.scale.setScalar(k);
-    obj.position.sub(box.getCenter(new THREE.Vector3()).multiplyScalar(k));
+    var c = box.getCenter(new THREE.Vector3());
+    obj.position.x -= c.x * k; obj.position.z -= c.z * k;
     obj.position.y -= box.min.y * k;
   }
   modelTemplate = obj;
-  checkARSupport();
+  statusP.textContent = 'Ready — tap Start AR';
+  if (!startBtn.disabled) return;
+  navigator.xr && navigator.xr.isSessionSupported('immersive-ar').then(function(ok){
+    if (ok) startBtn.disabled = false;
+  });
 }, undefined, function() {
-  // Model failed — use orange box placeholder
-  var g = new THREE.Group();
-  var box = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.15, 0.15),
-    new THREE.MeshStandardMaterial({ color: 0xe37400 }));
-  box.position.y = 0.075;
-  g.add(box);
-  modelTemplate = g;
-  checkARSupport();
+  modelTemplate = makeBox();
 });
 
-function checkARSupport() {
-  if (!navigator.xr) {
-    statusP.textContent = 'WebXR not available. Use Chrome on Android.';
-    return;
-  }
-  navigator.xr.isSessionSupported('immersive-ar').then(function(ok) {
-    if (ok) {
-      statusP.textContent = 'Ready — tap Start AR';
-      startBtn.disabled = false;
-    } else {
-      statusP.textContent = 'AR not supported on this device.';
-    }
-  });
-}
-
-// XR hit-test state
-var xrHitTestSource = null;
-var xrSession = null;
-
+// --- Session start: exact immersive-web sample order ---
 startBtn.addEventListener('click', function() {
   overlay.classList.add('hidden');
+
   navigator.xr.requestSession('immersive-ar', {
     requiredFeatures: ['local', 'hit-test'],
     optionalFeatures: ['dom-overlay'],
@@ -420,35 +428,27 @@ startBtn.addEventListener('click', function() {
   }).then(function(session) {
     xrSession = session;
 
-    session.addEventListener('end', function() {
-      if (xrHitTestSource) { xrHitTestSource.cancel(); xrHitTestSource = null; }
-      xrSession = null;
-      reticle.visible = false;
-      infoEl.style.display = 'none';
-      exitBtn.style.display = 'none';
-      overlay.classList.remove('hidden');
-      statusP.textContent = 'Session ended - tap Start AR to go again';
-      startBtn.disabled = false;
-      renderer.setAnimationLoop(null);
-    });
+    session.addEventListener('end', onSessionEnd);
 
-    session.addEventListener('select', onSelect);
+    // updateRenderState SYNCHRONOUSLY — same as immersive-web sample
+    // We already created gl with xrCompatible:true so makeXRCompatible is instant
+    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
 
-    // setSession sets up updateRenderState (base layer) internally.
-    // Hit-test source MUST be requested AFTER updateRenderState — matching
-    // the immersive-web sample which calls updateRenderState synchronously first.
-    return renderer.xr.setSession(session);
-
-  }).then(function() {
-    var session = xrSession;
-    // Base layer is now set up — safe to request hit-test source
-    return session.requestReferenceSpace('viewer').then(function(viewerSpace) {
+    // PARALLEL (same as immersive-web): viewer-space -> hit-test source
+    session.requestReferenceSpace('viewer').then(function(viewerSpace) {
       return session.requestHitTestSource({ space: viewerSpace });
     }).then(function(hts) {
       xrHitTestSource = hts;
+    });
+
+    // PARALLEL: local space -> start loop
+    session.requestReferenceSpace('local').then(function(rs) {
+      xrRefSpace = rs;
+      cssReticle.style.display = 'block';
       infoEl.style.display = 'block';
       exitBtn.style.display = 'block';
-      renderer.setAnimationLoop(onXRFrame);
+      session.addEventListener('select', onSelect);
+      session.requestAnimationFrame(onXRFrame);
     });
 
   }).catch(function(e) {
@@ -458,42 +458,74 @@ startBtn.addEventListener('click', function() {
   });
 });
 
-exitBtn.addEventListener('click', function() {
-  if (xrSession) xrSession.end();
-});
+function endXR() { if (xrSession) xrSession.end(); }
+
+function onSessionEnd() {
+  if (xrHitTestSource) { xrHitTestSource.cancel(); xrHitTestSource = null; }
+  xrSession = null; xrRefSpace = null;
+  cssReticle.style.display = 'none';
+  reticle3d.visible = false;
+  infoEl.style.display = 'none';
+  exitBtn.style.display = 'none';
+  overlay.classList.remove('hidden');
+  statusP.textContent = 'Session ended — tap Start AR again';
+  startBtn.disabled = false;
+}
 
 function onSelect() {
-  if (!reticle.visible || !modelTemplate) return;
+  if (!reticle3d.visible || !modelTemplate) return;
   var clone = modelTemplate.clone();
   clone.matrixAutoUpdate = false;
-  clone.matrix.copy(reticle.matrix);
+  clone.matrix.copy(reticle3d.matrix);
   clone.matrixWorldNeedsUpdate = true;
   scene.add(clone);
   placed.push(clone);
-  if (placed.length > MAX_PLACED) scene.remove(placed.shift());
+  if (placed.length > 30) scene.remove(placed.shift());
   infoEl.textContent = 'Tap again to place another';
 }
 
 function onXRFrame(t, frame) {
-  if (!frame || !xrHitTestSource) return;
-  // Use renderer.xr.getReferenceSpace() — the same 'local' space Three.js uses internally
-  var refSpace = renderer.xr.getReferenceSpace();
-  if (!refSpace) return;
+  var session = frame.session;
+  session.requestAnimationFrame(onXRFrame);
 
-  var hits = frame.getHitTestResults(xrHitTestSource);
-  if (hits.length > 0) {
-    var hitPose = hits[0].getPose(refSpace);
-    if (hitPose) {
-      reticle.visible = true;
-      reticle.matrix.fromArray(hitPose.transform.matrix);
-      reticle.matrixWorldNeedsUpdate = true;
-      if (placed.length === 0) infoEl.textContent = 'Surface found — tap to place';
+  var pose = frame.getViewerPose(xrRefSpace);
+  reticle3d.visible = false;
+  cssReticle.classList.remove('hit');
+
+  if (xrHitTestSource && pose) {
+    var hits = frame.getHitTestResults(xrHitTestSource);
+    if (hits.length > 0) {
+      var hitPose = hits[0].getPose(xrRefSpace);
+      if (hitPose) {
+        // Update 3D reticle matrix
+        reticle3d.visible = true;
+        reticle3d.matrix.fromArray(hitPose.transform.matrix);
+        reticle3d.matrixWorldNeedsUpdate = true;
+        cssReticle.classList.add('hit');
+        if (placed.length === 0) infoEl.textContent = 'Surface found — tap to place';
+      }
+    } else {
+      if (placed.length === 0) infoEl.textContent = 'Move phone slowly over a flat surface...';
     }
-  } else {
-    reticle.visible = false;
-    if (placed.length === 0) infoEl.textContent = 'Move phone over a surface...';
   }
-  renderer.render(scene, camera);
+
+  // Render Three.js into the XR base layer framebuffer
+  var baseLayer = session.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer);
+
+  if (pose) {
+    for (var i = 0; i < pose.views.length; i++) {
+      var view = pose.views[i];
+      var vp = baseLayer.getViewport(view);
+      renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
+      camera.matrix.fromArray(view.transform.matrix);
+      camera.matrix.decompose(camera.position, camera.quaternion, camera.scale);
+      camera.updateMatrixWorld(true);
+      camera.projectionMatrix.fromArray(view.projectionMatrix);
+      camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+      renderer.render(scene, camera);
+    }
+  }
 }
 </script>
 </body>
