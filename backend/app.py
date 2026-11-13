@@ -318,6 +318,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:transparent}
   background:rgba(0,0,0,.65);color:#fff;border:none;border-radius:20px;
   padding:9px 18px;font:700 13px sans-serif;cursor:pointer;display:none;
 }
+/* TEMP DEBUG: hit-test diagnostics overlay */
+#dbg{
+  position:fixed;top:8px;left:8px;z-index:30;max-width:70vw;
+  background:rgba(0,0,0,.7);color:#0f0;padding:6px 8px;border-radius:6px;
+  font:11px/1.4 monospace;white-space:pre-wrap;word-break:break-word;
+  pointer-events:none;display:none;
+}
 </style>
 </head>
 <body>
@@ -329,6 +336,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:transparent}
 </div>
 <div id="info">Move phone over a surface...</div>
 <button id="exit-btn">Exit</button>
+<div id="dbg"></div>
 
 <!-- 1. Bootstrap: runs before any CDN script so the status always changes and errors are always visible -->
 <script>
@@ -511,6 +519,54 @@ setStatus('Loading 3D engine...');
   var xrViewerSpace   = null;   // 'viewer' : only used as the hit-test ray source
   var xrHitTestSource = null;
 
+  // ---------- TEMP DEBUG: hit-test diagnostics ----------
+  var dbgEl = document.getElementById('dbg');
+  var NL = String.fromCharCode(10);
+  var dbg = { frames: 0, hits: 0, poses: 0, htsState: 'null', lastError: '', lastLog: 0 };
+  function dbgError(where, e) {
+    dbg.lastError = where + ': ' + (e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e));
+    console.log('[AR dbg] error ' + dbg.lastError);
+  }
+  function dbgText() {
+    return 'Frames: ' + dbg.frames + NL +
+      'Hits: ' + dbg.hits + '  Poses: ' + dbg.poses + NL +
+      'HTS: ' + (xrHitTestSource ? 'ready' : dbg.htsState) + '  RS: ' + (xrRefSpace ? 'ready' : 'null') + NL +
+      'Err: ' + (dbg.lastError || 'none');
+  }
+  function dbgRender(t) {
+    dbgEl.textContent = dbgText();
+    if (t - dbg.lastLog >= 1000) {
+      dbg.lastLog = t;
+      console.log('[AR dbg] frames=' + dbg.frames + ' hits=' + dbg.hits + ' poses=' + dbg.poses +
+        ' hts=' + (xrHitTestSource ? 'ready' : dbg.htsState) + ' rs=' + (xrRefSpace ? 'ready' : 'null') +
+        ' err=' + (dbg.lastError || 'none'));
+    }
+  }
+
+  // Requested from inside the first XRFrame callback (some Android Chrome builds return
+  // empty results for a source requested before the first frame). Retries after a failure.
+  var htsRequesting = false;
+  function ensureHitTestSource(session) {
+    if (xrHitTestSource || htsRequesting || !session) return;
+    htsRequesting = true;
+    dbg.htsState = 'requesting';
+    session.requestReferenceSpace('viewer').then(function(vs) {
+      xrViewerSpace = vs;
+      return session.requestHitTestSource({ space: vs });
+    }).then(function(hts) {
+      htsRequesting = false;
+      if (session !== xrSession) { try { hts.cancel(); } catch (e) {} return; }
+      xrHitTestSource = hts;
+      dbg.htsState = 'ready';
+      console.log('[AR dbg] hit-test source ready at frame ' + dbg.frames);
+    }).catch(function(e) {
+      dbg.htsState = 'null';
+      dbgError('requestHitTestSource', e);
+      // retry in ~1s rather than every frame
+      setTimeout(function() { htsRequesting = false; }, 1000);
+    });
+  }
+
   function onSessionEnd() {
     if (xrHitTestSource) { try { xrHitTestSource.cancel(); } catch (e) {} }
     xrHitTestSource = null;
@@ -521,6 +577,8 @@ setStatus('Loading 3D engine...');
     renderer.setAnimationLoop(null);
     infoEl.style.display = 'none';
     exitBtn.style.display = 'none';
+    dbgEl.style.display = 'none';
+    htsRequesting = false;
     overlay.classList.remove('hidden');
     setStatus('Session ended. Tap Start AR to go again.');
     startBtn.disabled = false;
@@ -539,21 +597,23 @@ setStatus('Loading 3D engine...');
       // setSession requests the 'local' reference space (set above) and resolves when it is ready
       return renderer.xr.setSession(session).then(function() {
         xrRefSpace = renderer.xr.getReferenceSpace();
-        return session.requestReferenceSpace('viewer');
-      }).then(function(vs) {
-        xrViewerSpace = vs;
-        return session.requestHitTestSource({ space: vs });
-      }).then(function(hts) {
-        xrHitTestSource = hts;
+        // The hit-test source is NOT requested here: onXRFrame requests it on the first XRFrame.
+        dbg.frames = 0; dbg.hits = 0; dbg.poses = 0; dbg.lastError = ''; dbg.lastLog = 0;
+        dbg.htsState = 'null';
+        htsRequesting = false;
+        frameErrorShown = false;
         session.addEventListener('select', onSelect);
         overlay.classList.add('hidden');
         infoEl.textContent = 'Move phone over a surface...';
         infoEl.style.display = 'block';
         exitBtn.style.display = 'block';
+        dbgEl.style.display = 'block';
+        dbgEl.textContent = dbgText();
         renderer.setAnimationLoop(onXRFrame);
       });
     }).catch(function(e) {
       var msg = (e && e.message) ? e.message : String(e);
+      dbgError('session start', e);
       if (xrSession) { try { xrSession.end(); } catch (x) {} }
       overlay.classList.remove('hidden');
       setStatus('AR failed to start.');
@@ -581,13 +641,19 @@ setStatus('Loading 3D engine...');
 
   var frameErrorShown = false;
   function onXRFrame(t, frame) {
-    if (!frame || !xrRefSpace) return;
+    if (!frame) return;
+    dbg.frames++;
+    if (!xrRefSpace) { dbgRender(t); return; }
+    // First-frame (and retry) hit-test source init
+    if (!xrHitTestSource) ensureHitTestSource(frame.session);
     try {
       reticle.visible = false;
       if (xrHitTestSource) {
         var hits = frame.getHitTestResults(xrHitTestSource);
+        if (hits.length > 0) dbg.hits++;
         var pose = hits.length > 0 ? hits[0].getPose(xrRefSpace) : null;
         if (pose) {
+          dbg.poses++;
           reticle.visible = true;
           reticle.matrix.fromArray(pose.transform.matrix);
           if (placed.length === 0) infoEl.textContent = 'Surface found. Tap to place';
@@ -596,8 +662,10 @@ setStatus('Loading 3D engine...');
         }
       }
     } catch (e) {
+      dbgError('frame', e);
       if (!frameErrorShown) { frameErrorShown = true; infoEl.textContent = 'Frame error: ' + e.message; }
     }
+    dbgRender(t);
     renderer.render(scene, camera);
   }
 
