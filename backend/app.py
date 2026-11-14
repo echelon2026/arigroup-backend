@@ -359,7 +359,8 @@ var xrHitTestSource = null;   // viewer-space hit-test source
 var canvas = document.createElement('canvas');
 document.body.appendChild(canvas);
 canvas.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:1;pointer-events:none;';
-var gl = canvas.getContext('webgl', { xrCompatible: true, alpha: true, antialias: true });
+var gl = canvas.getContext('webgl2', { xrCompatible: true, alpha: true, antialias: true })
+        || canvas.getContext('webgl', { xrCompatible: true, alpha: true, antialias: true });
 var renderer = new THREE.WebGLRenderer({ canvas: canvas, context: gl, alpha: true, antialias: true });
 renderer.setClearColor(0x000000, 0);
 renderer.setPixelRatio(window.devicePixelRatio);
