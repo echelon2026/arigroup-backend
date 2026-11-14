@@ -350,21 +350,18 @@ if (!navigator.xr) {
   });
 }
 
-// --- Raw WebXR state (no Three.js XR manager) ---
+// --- XR state ---
 var xrSession       = null;
-var xrRefSpace      = null;   // 'local' — objects stay fixed in world
-var xrHitTestSource = null;   // viewer-space hit-test source
+var xrHitTestSource = null;
 
-// --- Three.js scene (rendering only, no xr.enabled) ---
-var canvas = document.createElement('canvas');
-document.body.appendChild(canvas);
-canvas.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:1;pointer-events:none;';
-var gl = canvas.getContext('webgl2', { xrCompatible: true, alpha: true, antialias: true })
-        || canvas.getContext('webgl', { xrCompatible: true, alpha: true, antialias: true });
-var renderer = new THREE.WebGLRenderer({ canvas: canvas, context: gl, alpha: true, antialias: true });
+// --- Three.js — xr.enabled so it owns the XR framebuffer ---
+var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setClearColor(0x000000, 0);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+renderer.domElement.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:1;pointer-events:none;';
 
 var scene  = new THREE.Scene();
 var camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 20);
@@ -418,7 +415,7 @@ new THREE.GLTFLoader().load(MODEL, function(gltf) {
   modelTemplate = makeBox();
 });
 
-// --- Session start: exact immersive-web sample order ---
+// --- Session start ---
 startBtn.addEventListener('click', function() {
   overlay.classList.add('hidden');
 
@@ -428,28 +425,22 @@ startBtn.addEventListener('click', function() {
     domOverlay: { root: document.body }
   }).then(function(session) {
     xrSession = session;
-
     session.addEventListener('end', onSessionEnd);
 
-    // updateRenderState SYNCHRONOUSLY — same as immersive-web sample
-    // We already created gl with xrCompatible:true so makeXRCompatible is instant
-    session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
-
-    // PARALLEL (same as immersive-web): viewer-space -> hit-test source
-    session.requestReferenceSpace('viewer').then(function(viewerSpace) {
+    // Three.js xr.setSession handles updateRenderState + makeXRCompatible
+    return renderer.xr.setSession(session).then(function() {
+      // AFTER setSession: request hit-test source
+      return session.requestReferenceSpace('viewer');
+    }).then(function(viewerSpace) {
       return session.requestHitTestSource({ space: viewerSpace });
     }).then(function(hts) {
       xrHitTestSource = hts;
-    });
-
-    // PARALLEL: local space -> start loop
-    session.requestReferenceSpace('local').then(function(rs) {
-      xrRefSpace = rs;
       cssReticle.style.display = 'block';
       infoEl.style.display = 'block';
       exitBtn.style.display = 'block';
       session.addEventListener('select', onSelect);
-      session.requestAnimationFrame(onXRFrame);
+      // Three.js drives the XR frame loop
+      renderer.setAnimationLoop(onXRFrame);
     });
 
   }).catch(function(e) {
@@ -463,7 +454,8 @@ function endXR() { if (xrSession) xrSession.end(); }
 
 function onSessionEnd() {
   if (xrHitTestSource) { xrHitTestSource.cancel(); xrHitTestSource = null; }
-  xrSession = null; xrRefSpace = null;
+  xrSession = null;
+  renderer.setAnimationLoop(null);
   cssReticle.style.display = 'none';
   reticle3d.visible = false;
   infoEl.style.display = 'none';
@@ -485,48 +477,50 @@ function onSelect() {
   infoEl.textContent = 'Tap again to place another';
 }
 
-function onXRFrame(t, frame) {
-  var session = frame.session;
-  session.requestAnimationFrame(onXRFrame);
+var _normal = new THREE.Vector3();
 
-  var pose = frame.getViewerPose(xrRefSpace);
+function onXRFrame(t, frame) {
+  if (!frame) return;
+
+  var refSpace = renderer.xr.getReferenceSpace();
   reticle3d.visible = false;
   cssReticle.classList.remove('hit');
 
-  if (xrHitTestSource && pose) {
+  if (xrHitTestSource && refSpace) {
     var hits = frame.getHitTestResults(xrHitTestSource);
-    if (hits.length > 0) {
-      var hitPose = hits[0].getPose(xrRefSpace);
-      if (hitPose) {
-        // Update 3D reticle matrix
-        reticle3d.visible = true;
-        reticle3d.matrix.fromArray(hitPose.transform.matrix);
-        reticle3d.matrixWorldNeedsUpdate = true;
-        cssReticle.classList.add('hit');
-        if (placed.length === 0) infoEl.textContent = 'Surface found — tap to place';
+    for (var i = 0; i < hits.length; i++) {
+      var hitPose = hits[i].getPose(refSpace);
+      if (!hitPose) continue;
+
+      // Surface normal check (Y column of the hit pose matrix)
+      var matrix = new THREE.Matrix4().fromArray(hitPose.transform.matrix);
+      _normal.setFromMatrixColumn(matrix, 1);
+
+      var surfaceType = null;
+      if (_normal.y > 0.85) {
+        surfaceType = 'floor';
+      } else if (Math.abs(_normal.y) < 0.15) {
+        surfaceType = 'wall';
       }
-    } else {
-      if (placed.length === 0) infoEl.textContent = 'Move phone slowly over a flat surface...';
+
+      if (surfaceType) {
+        reticle3d.matrix.copy(matrix);
+        reticle3d.matrixWorldNeedsUpdate = true;
+        reticle3d.visible = true;
+        cssReticle.classList.add('hit');
+        if (placed.length === 0) infoEl.textContent = surfaceType === 'floor'
+          ? 'Floor detected — tap to place'
+          : 'Wall detected — tap to place';
+        break;
+      }
+    }
+    if (!reticle3d.visible && placed.length === 0) {
+      infoEl.textContent = 'Move phone slowly over a surface...';
     }
   }
 
-  // Render Three.js into the XR base layer framebuffer
-  var baseLayer = session.renderState.baseLayer;
-  gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer);
-
-  if (pose) {
-    for (var i = 0; i < pose.views.length; i++) {
-      var view = pose.views[i];
-      var vp = baseLayer.getViewport(view);
-      renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
-      camera.matrix.fromArray(view.transform.matrix);
-      camera.matrix.decompose(camera.position, camera.quaternion, camera.scale);
-      camera.updateMatrixWorld(true);
-      camera.projectionMatrix.fromArray(view.projectionMatrix);
-      camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-      renderer.render(scene, camera);
-    }
-  }
+  // Three.js (xr.enabled) handles XR framebuffer internally
+  renderer.render(scene, camera);
 }
 </script>
 </body>
